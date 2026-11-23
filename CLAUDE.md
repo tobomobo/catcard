@@ -27,7 +27,13 @@ PSBT, secp256k1, DfuSe/UM0391, USB), and permissively licensed crates.
 cargo t          # host tests, every crate but catcard-fw
 cargo fw-mk3     # or fw-mk4 / fw-q1
 cargo clippy --workspace --all-targets
+cargo screens    # Q1 screens as PNGs in out/screens/ (+ index.html); `--list`, `home pin`, `--scale 3`
 ```
+
+Working on how a screen looks: run `cargo screens`, look at the PNG, change, repeat. The
+scenes in `tools/catcard-screens/src/scenes.rs` re-assemble each screen from `catcard-ui`
+the way `catcard-fw` does; if you change a screen's composition in the firmware, change
+its scene too.
 
 `catcard-fw` needs `--target thumbv7em-none-eabihf` and exactly one board feature; the
 aliases in `.cargo/config.toml` handle both.
@@ -107,6 +113,7 @@ When changing it:
 | the binary, boot path | `crates/catcard-fw/src/boot.rs` |
 | linker script generation | `crates/catcard-fw/build.rs` |
 | sign / verify / package | `tools/catcard-image` |
+| Q1 screens to PNG, on the host | `tools/catcard-screens` |
 
 ## Current state
 

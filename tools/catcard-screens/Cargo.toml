@@ -1,0 +1,25 @@
+[package]
+name = "catcard-screens"
+description = "Render CatCard's Q1 screens to PNG on the host, for looking at the UI without a device"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "catcard-screens"
+path = "src/main.rs"
+
+[dependencies]
+# The same widgets the firmware draws with, with the Q1's full-colour chain marks.
+catcard-ui = { workspace = true, features = ["colour-marks"] }
+# The PNG's image data is a zlib stream: the library the device inflates with.
+compcol.workspace = true
+# The QR encoder the firmware's address screen uses, for that scene.
+anyd.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+heapless.workspace = true

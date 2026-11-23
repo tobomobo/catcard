@@ -306,6 +306,18 @@ name = "catcard-qr"
 version = "7.0.0"
 
 [[package]]
+name = "catcard-screens"
+version = "7.0.0"
+dependencies = [
+ "anyd",
+ "anyhow",
+ "catcard-ui",
+ "clap",
+ "compcol 0.8.0",
+ "heapless",
+]
+
+[[package]]
 name = "catcard-sd"
 version = "7.0.0"
 dependencies = [

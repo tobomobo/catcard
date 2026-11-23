@@ -37,3 +37,5 @@ fw-q1-ship  = "build --release -p catcard-fw --target thumbv7em-none-eabihf --no
 
 # Host-side: unit tests for the portable crates and the image tool.
 t        = "test --workspace --exclude catcard-fw"
+# The Q1's screens as PNGs in out/screens/, for looking at the UI without a device.
+screens  = "run -q -p catcard-screens --"
