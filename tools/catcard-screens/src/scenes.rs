@@ -570,9 +570,13 @@ fn tx_page(at_end: bool) -> Frame {
         Line::body("Inputs").aside("2 of 2 ours").small(),
         Line::body("Change").aside("0.00447900 BTC").small().muted(),
         Line::divider(),
-        Line::body("To #1").aside("0.01500000 BTC"),
+        Line::body("To #1").aside("0.01500000 BTC").small_label(),
         Line::body(&to).small().wrapped().value(),
-        Line::body("Change #2").aside("0.00447900 BTC").muted(),
+        Line::space(),
+        Line::body("Change #2")
+            .aside("0.00447900 BTC")
+            .small_label()
+            .muted(),
         Line::body(&change).small().wrapped().value().muted(),
     ];
     tx_frame(&lines, if at_end { 1.0 } else { 0.0 }, "sign")
@@ -644,7 +648,11 @@ fn tx_big(page: usize, at: f32) -> Frame {
         let head = format!("{} #{}", if change { "Change" } else { "To" }, i + 1);
         texts.push((head, btc(big_sats(i)), blocked(&big_address(i)), change));
     }
-    let note = format!("outputs {}-{} of {}", start + 1, end, BIG_OUTPUTS);
+    let note = format!("Outputs {}-{} of {}", start + 1, end, BIG_OUTPUTS);
+    let change_row = Line::body("Change (2 outputs)")
+        .aside(&change_total)
+        .small()
+        .muted();
     let mut lines = vec![Line::title("Sign transaction")];
     if page == 0 {
         lines.extend([
@@ -652,16 +660,16 @@ fn tx_big(page: usize, at: f32) -> Frame {
             Line::body(&sending).large(),
             Line::body("Fee").aside(fee).small(),
             Line::body("Inputs").aside("41 of 41 ours").small(),
-            Line::body("Change (2 outputs)")
-                .aside(&change_total)
-                .small()
-                .muted(),
+            change_row,
             Line::divider(),
         ]);
     }
-    lines.push(Line::body(&note).small());
+    lines.push(Line::body(&note).small().muted());
     for (i, (head, amount, address, change)) in texts.iter().enumerate() {
-        let head = Line::body(head).aside(amount);
+        if i > 0 {
+            lines.push(Line::space());
+        }
+        let head = Line::body(head).aside(amount).small_label();
         let addr = Line::body(address).small().wrapped().value();
         if *change {
             lines.extend([head.muted(), addr.muted()]);
@@ -681,8 +689,10 @@ fn tx_big(page: usize, at: f32) -> Frame {
     if last && page > 0 {
         lines.extend([
             Line::divider(),
-            Line::body("Sending").aside(&sending),
+            Line::body("Sending").small().muted(),
+            Line::body(&sending).large(),
             Line::body("Fee").aside(fee).small(),
+            change_row,
         ]);
     }
     tx_frame(&lines, at, if last { "sign" } else { "next page" })
@@ -715,7 +725,10 @@ fn tx_consolidate() -> Frame {
         Line::body("Fee").aside("0.00018200 BTC (0.02%)").small(),
         Line::body("Inputs").aside("23 of 23 ours").small(),
         Line::divider(),
-        Line::body("Change").aside("1.20431577 BTC").muted(),
+        Line::body("Change")
+            .aside("1.20431577 BTC")
+            .small_label()
+            .muted(),
         Line::body(&change).small().wrapped().value().muted(),
     ];
     tx_frame(&lines, 0.0, "sign")

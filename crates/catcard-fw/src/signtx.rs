@@ -1851,7 +1851,7 @@ fn review_page(
     /// Lines a page can hold: the totals and their warnings, the change, the timelocks, up
     /// to three per output (the amount, the address or key, and a change warning), the
     /// page note, the totals again under the last of several pages, and the key hint.
-    const LINES: usize = 17 + MAX_RELATIVE_SHOWN + 3 * PAGE;
+    const LINES: usize = 19 + MAX_RELATIVE_SHOWN + 3 * PAGE;
     /// Relative locks named on the first page before the rest are only counted.
     const MAX_RELATIVE_SHOWN: usize = 4;
     type Text = Row;
@@ -1951,27 +1951,9 @@ fn review_page(
 
         // What comes back, beside what leaves: change sits wherever the host put it among
         // the outputs, perhaps pages on, so its total is said up here with the rest.
-        if summary.change_outputs > 0 && summary.sending > 0 {
-            let mut amount = heapless::String::<AMOUNT_LEN>::new();
-            btc(summary.change, &mut amount);
-            let mut line = Text::new();
-            if colour {
-                let _ = write!(line, "Change");
-                if summary.change_outputs > 1 {
-                    let _ = write!(line, " ({} outputs)", summary.change_outputs);
-                }
-                let at = line.len();
-                let _ = write!(line, "{amount}");
-                let style = Style::Pair {
-                    at,
-                    small: true,
-                    muted: true,
-                };
-                say(texts, styles, line, style);
-            } else {
-                let _ = write!(line, "change {amount}");
-                say(texts, styles, line, Style::Small);
-            }
+        let mut line = Text::new();
+        if let Some(style) = change_line(summary, colour, &mut line) {
+            say(texts, styles, line, style);
         }
 
         // A computer's request signs only the keys it listed. Inputs this wallet could
@@ -2058,16 +2040,24 @@ fn review_page(
 
     // Where this page sits, when it does not hold every output: more than a page of them,
     // or fewer that `review` had to split because they did not fit one.
+    // On the colour panel it names the list under it the way "Sending" names the figure
+    // under that: small and grey, a heading rather than a line of the transaction.
     if start > 0 || !last {
         let mut line = Text::new();
         let _ = write!(
             line,
-            "outputs {}-{} of {}",
+            "{} {}-{} of {}",
+            if colour { "Outputs" } else { "outputs" },
             start + 1,
             start + shown.len(),
             summary.outputs
         );
-        say(texts, styles, line, Style::Small);
+        say(
+            texts,
+            styles,
+            line,
+            if colour { Style::Label } else { Style::Small },
+        );
     }
 
     for (n, d) in shown.iter().enumerate() {
@@ -2101,14 +2091,14 @@ fn review_page(
                 ""
             }
         );
-        // On the colour panel each output is headed by a row a size above its address:
-        // where it goes on the left, how much on the right. Change, which comes back to
-        // this wallet, is in grey, so what leaves it is what stands out. The one-bit
-        // panels have no size to spare.
+        // On the colour panel each output is headed by a row: where it goes on the left,
+        // small and grey, and how much on the right a size up, so a column of outputs
+        // reads as a column of amounts. Change, which comes back to this wallet, is in
+        // grey, so what leaves it is what stands out. The one-bit panels have no size to
+        // spare.
         let style = if colour {
-            Style::Pair {
+            Style::Output {
                 at,
-                small: false,
                 muted: d.change,
             }
         } else {
@@ -2161,29 +2151,28 @@ fn review_page(
     // read before signing is what the whole transaction does, not its last output.
     let totals_from = texts.len();
     let totals_again = last && start > 0;
+    // Set as they were on the first page, so they read as the same figures.
     if totals_again {
         let mut amount = heapless::String::<AMOUNT_LEN>::new();
         btc(moved_sats, &mut amount);
         let mut line = Text::new();
-        let _ = write!(line, "{moved}");
-        let at = line.len();
-        if !colour {
-            let _ = line.push(' ');
-        }
-        let _ = write!(line, "{amount}");
-        let style = if colour {
-            Style::Pair {
-                at,
-                small: false,
-                muted: false,
-            }
+        if colour {
+            let _ = write!(line, "{moved}");
+            say(texts, styles, line, Style::Label);
+            let mut line = Text::new();
+            let _ = write!(line, "{amount}");
+            say(texts, styles, line, Style::Headline);
         } else {
-            Style::Body
-        };
-        say(texts, styles, line, style);
+            let _ = write!(line, "{moved} {amount}");
+            say(texts, styles, line, Style::Body);
+        }
         let mut line = Text::new();
         let style = fee_line(summary, colour, &mut line);
         say(texts, styles, line, style);
+        let mut line = Text::new();
+        if let Some(style) = change_line(summary, colour, &mut line) {
+            say(texts, styles, line, style);
+        }
     }
 
     // What the two keys do. The Q1 says it in the foot `scroll_choice_as` pins under the
@@ -2200,13 +2189,24 @@ fn review_page(
         say(texts, styles, line, Style::Keys);
     }
 
-    let mut doc: heapless::Vec<Line, { LINES + 3 }> = heapless::Vec::new();
+    // The title, a rule before the outputs and before the totals again, and air between
+    // one output and the next.
+    let mut doc: heapless::Vec<Line, { LINES + 3 + PAGE }> = heapless::Vec::new();
     let _ = doc.push(Line::title("Sign transaction"));
+    let mut outputs_set = 0usize;
     for (i, (text, style)) in texts.iter().zip(styles.iter()).enumerate() {
         // The totals above, the outputs below: a rule between, where there are both; and
         // one over the totals repeated at the end.
         if (i == outputs_from && i > 0) || (totals_again && i == totals_from) {
             lost.set(lost.get() || doc.push(Line::divider()).is_err());
+        }
+        // Each output's block -- row, address, any warning -- apart from the one above,
+        // so twenty of them down a page read as twenty and not as one column of text.
+        if let Style::Output { .. } = style {
+            if outputs_set > 0 {
+                lost.set(lost.get() || doc.push(Line::space()).is_err());
+            }
+            outputs_set += 1;
         }
         // Every row may wrap. A row too wide for the panel is otherwise cut at its right
         // edge -- an amount's last digits, or "HIGH" after a fee -- and still counts as
@@ -2227,6 +2227,11 @@ fn review_page(
                     (false, true) => l.muted(),
                     (false, false) => l,
                 }
+            }
+            Style::Output { at, muted } => {
+                let (label, value) = text.as_str().split_at(at);
+                let l = Line::body(label).aside(value).small_label();
+                if muted { l.muted() } else { l }
             }
             // Behind the value bar, which ties it to the row above. Its indent costs
             // the line a few characters, which in blocks of four only moves where the
@@ -2335,6 +2340,12 @@ enum Style {
         small: bool,
         muted: bool,
     },
+    /// An output's row on the colour panel: where it goes, the first `at` bytes, small and
+    /// grey at the left; the amount at the right in the body face. Muted for change.
+    Output {
+        at: usize,
+        muted: bool,
+    },
     /// A warning about the output above, wrapped: in the accent and behind the output's
     /// bar on the colour panel.
     Warn,
@@ -2402,6 +2413,36 @@ fn fee_line(summary: &psbtview::Summary, colour: bool, line: &mut Row) -> Style 
     } else {
         Style::Body
     }
+}
+
+/// The change line of the review, into `line`, and how it is set; `None`, with nothing
+/// written, when there is no change beside an amount sent.
+///
+/// Change sits wherever the host put it among the outputs, perhaps pages on, so its
+/// total is said with the other totals. A consolidation is all change, and its headline
+/// already says so.
+fn change_line(summary: &psbtview::Summary, colour: bool, line: &mut Row) -> Option<Style> {
+    use core::fmt::Write as _;
+    if summary.change_outputs == 0 || summary.sending == 0 {
+        return None;
+    }
+    let mut amount = heapless::String::<AMOUNT_LEN>::new();
+    btc(summary.change, &mut amount);
+    if !colour {
+        let _ = write!(line, "change {amount}");
+        return Some(Style::Small);
+    }
+    let _ = write!(line, "Change");
+    if summary.change_outputs > 1 {
+        let _ = write!(line, " ({} outputs)", summary.change_outputs);
+    }
+    let at = line.len();
+    let _ = write!(line, "{amount}");
+    Some(Style::Pair {
+        at,
+        small: true,
+        muted: true,
+    })
 }
 
 /// The fee as a share of `base` -- what is sent, or for a consolidation what is moved --

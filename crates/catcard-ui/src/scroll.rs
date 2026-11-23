@@ -194,6 +194,10 @@ pub struct Line<'a> {
     /// Drawn in [`ACCENT`](crate::theme::ACCENT): a warning about the line above it. See
     /// [`Line::warn`].
     pub warn: bool,
+    /// With an aside, the label a face smaller than its value. See [`Line::small_label`].
+    pub small_label: bool,
+    /// Not text: air between two items of a list. See [`Line::space`].
+    pub space: bool,
 }
 
 impl<'a> Line<'a> {
@@ -215,6 +219,8 @@ impl<'a> Line<'a> {
             divider: false,
             aside: None,
             warn: false,
+            small_label: false,
+            space: false,
         }
     }
 
@@ -236,6 +242,8 @@ impl<'a> Line<'a> {
             divider: false,
             aside: None,
             warn: false,
+            small_label: false,
+            space: false,
         }
     }
 
@@ -257,6 +265,8 @@ impl<'a> Line<'a> {
             divider: false,
             aside: None,
             warn: false,
+            small_label: false,
+            space: false,
         }
     }
 
@@ -351,6 +361,22 @@ impl<'a> Line<'a> {
         self
     }
 
+    /// With [`Line::aside`], the label in the small face beside a value in the line's own:
+    /// a figure that is the news, under a name that is not. Without an aside it changes
+    /// nothing.
+    pub const fn small_label(mut self) -> Self {
+        self.small_label = true;
+        self
+    }
+
+    /// Air between the items of a list that would otherwise run together, a few rows
+    /// high. Takes no room on the one-bit panel.
+    pub const fn space() -> Self {
+        let mut l = Self::body("");
+        l.space = true;
+        l
+    }
+
     /// A rule across the page, for between what a page shows and what can be done with
     /// it. Takes no room on the one-bit panel.
     pub const fn divider() -> Self {
@@ -377,6 +403,8 @@ pub struct VisualLine<'a> {
     pub divider: bool,
     pub aside: Option<&'a str>,
     pub warn: bool,
+    pub small_label: bool,
+    pub space: bool,
 }
 
 /// Spaces kept, at least, between a label and the value beside it.
@@ -463,13 +491,20 @@ fn wrap_into<'a>(lines: &[Line<'a>], width: usize, fonts: &Fonts<'_>, out: &mut 
             // Label and value on one row where both fit with room between them; where
             // they do not, the value goes whole on the row under its label. Clipping it
             // to make the row work would cut an amount short.
-            let room = width_of(face, line.text) + ASIDE_GAP * face.advance(b' ');
+            let label_face = if line.small_label { fonts.small } else { face };
+            let room = width_of(label_face, line.text) + ASIDE_GAP * face.advance(b' ');
             if room + width_of(face, value) > avail {
                 // Each keeps the ink it would have had beside the other.
                 let menu = line.menu_item.is_some();
                 let label = Line {
                     aside: None,
                     muted: line.muted || !menu,
+                    size: if line.small_label {
+                        Size::Small
+                    } else {
+                        line.size
+                    },
+                    small_label: false,
                     ..*line
                 };
                 let value = Line {
@@ -478,6 +513,7 @@ fn wrap_into<'a>(lines: &[Line<'a>], width: usize, fonts: &Fonts<'_>, out: &mut 
                     menu_item: None,
                     wrap: true,
                     muted: line.muted || menu,
+                    small_label: false,
                     ..*line
                 };
                 if !wrap_into(&[label, value], width, fonts, out) {
@@ -502,6 +538,8 @@ fn wrap_into<'a>(lines: &[Line<'a>], width: usize, fonts: &Fonts<'_>, out: &mut 
                 divider: line.divider,
                 aside: line.aside,
                 warn: line.warn,
+                small_label: line.small_label,
+                space: line.space,
             });
             if pushed.is_err() {
                 return false;
@@ -530,6 +568,8 @@ fn wrap_into<'a>(lines: &[Line<'a>], width: usize, fonts: &Fonts<'_>, out: &mut 
                 divider: false,
                 aside: None,
                 warn: line.warn,
+                small_label: false,
+                space: false,
             });
             if pushed.is_err() {
                 return false;
@@ -638,6 +678,9 @@ impl<'a> ScrollView<'a> {
     fn slot(&self, i: usize) -> usize {
         if self.lines[i].divider {
             return if self.fonts.colour { DIVIDER_ROOM } else { 0 };
+        }
+        if self.lines[i].space {
+            return if self.fonts.colour { SPACE_ROOM } else { 0 };
         }
         let rule = if self.fonts.title_rule && is_heading(&self.lines[i]) {
             TITLE_RULE_ROOM
@@ -1003,6 +1046,11 @@ pub(crate) const TITLE_RULE_DROP: usize = 3;
 
 /// Rows a divider takes on a panel with colour: air, the rule, air.
 const DIVIDER_ROOM: usize = 12;
+/// Rows a [`Line::space`] takes on a panel with colour.
+const SPACE_ROOM: usize = 8;
+/// How far a small label is raised from the foot of its row, so its baseline and the
+/// larger value's meet rather than their cells' bottoms.
+const SMALL_LABEL_LIFT: isize = 1;
 /// How far a value is indented on a panel with colour, and the bar in that room.
 const VALUE_INDENT: usize = 10;
 const VALUE_BAR: usize = 3;
@@ -1044,7 +1092,7 @@ pub fn render<C: Canvas + ?Sized>(canvas: &mut C, view: &ScrollView<'_>) {
             continue; // fully above the top
         }
 
-        if !view.shows(i) {
+        if !view.shows(i) || vl.space {
             continue;
         }
         if vl.divider {
@@ -1157,7 +1205,16 @@ pub fn render<C: Canvas + ?Sized>(canvas: &mut C, view: &ScrollView<'_>) {
                     } else {
                         (quiet, ink)
                     };
-                    draw_clipped(canvas, face, x, top, vl.text, label, h, tx, vx);
+                    // A small label sits on the value's line, its foot level with the
+                    // value's, so the two read as one row.
+                    let (label_face, label_top) = if vl.small_label {
+                        let small = fonts.small;
+                        let drop = lh.saturating_sub(small.line_height());
+                        (small, top + drop as isize - SMALL_LABEL_LIFT)
+                    } else {
+                        (face, top)
+                    };
+                    draw_clipped(canvas, label_face, x, label_top, vl.text, label, h, tx, vx);
                     draw_clipped(
                         canvas,
                         face,
@@ -1987,6 +2044,56 @@ mod tests {
         doc[MAX_LINES - 1] =
             Line::body("Change back to this same wallet").aside("21000000.00000000 BTC");
         assert!(!ScrollView::build(&doc, 320, 200, fonts()).whole());
+    }
+
+    #[test]
+    fn a_small_label_is_drawn_a_face_down_from_its_value_on_one_row() {
+        use crate::theme::SECONDARY;
+        let f = fonts();
+        let doc = [Line::body("To #1").aside("0.015 BTC").small_label()];
+        let view = ScrollView::build(&doc, 320, 200, f);
+        assert_eq!(view.lines.len(), 1, "label and value share the row");
+        let mut c = Gray320x240::new();
+        render(&mut c, &view);
+        let rows = |ink: Level, xs: core::ops::Range<usize>| -> Vec<usize> {
+            (0..f.body.line_height())
+                .filter(|&y| xs.clone().any(|x| c.get(x, y) == ink))
+                .collect()
+        };
+        let label = rows(SECONDARY, 0..160);
+        let value = rows(INK, 160..320);
+        assert!(!label.is_empty() && !value.is_empty());
+        // Shorter than the value, and in its lower part: the small face, on the same line.
+        assert!(label.len() < value.len(), "{label:?} vs {value:?}");
+        assert!(label[0] > value[0]);
+        assert!(label[label.len() - 1] <= value[value.len() - 1]);
+    }
+
+    #[test]
+    fn a_small_label_with_no_room_beside_its_value_goes_above_it_in_the_small_face() {
+        let doc = [
+            Line::body("Change back to this same wallet, and again, and again")
+                .aside("21000000.00000000 BTC")
+                .small_label(),
+        ];
+        let view = ScrollView::build(&doc, 320, 200, fonts());
+        assert_eq!(view.lines.len(), 2);
+        assert_eq!(view.lines[0].size, Size::Small);
+        assert_eq!(view.lines[1].text, "21000000.00000000 BTC");
+        assert_eq!(view.lines[1].size, Size::Body);
+    }
+
+    #[test]
+    fn a_space_is_air_on_the_colour_panel_and_nothing_on_the_one_bit() {
+        let doc = [Line::body("a"), Line::space(), Line::body("b")];
+        let view = ScrollView::build(&doc, 320, 200, fonts());
+        assert_eq!(view.top(2) - view.top(1), SPACE_ROOM);
+        let mut c = Gray320x240::new();
+        render(&mut c, &view);
+        let (from, to) = (view.top(1), view.top(2));
+        assert!((from..to).all(|y| (0..320).all(|x| c.get(x, y) == PAPER)));
+        let view = ScrollView::build(&doc, 128, 64, compact_fonts());
+        assert_eq!(view.top(2), view.top(1));
     }
 
     #[test]
