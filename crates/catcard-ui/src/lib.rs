@@ -28,6 +28,7 @@ pub mod menu;
 pub mod nav;
 pub mod pager;
 pub mod pinentry;
+pub mod pinpage;
 pub mod qwerty;
 pub mod scramble;
 pub mod scroll;
@@ -38,6 +39,7 @@ pub mod statusbar;
 pub mod sweep;
 pub mod text;
 pub mod textentry;
+pub mod theme;
 pub mod widgets;
 
 pub use art::Bitmap;

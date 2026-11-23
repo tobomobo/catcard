@@ -1848,39 +1848,13 @@ fn review_page(
     use catcard_ui::scroll::{Line, ScrollView};
     use core::fmt::Write as _;
 
-    /// Lines a page can hold: the totals and their warnings, the timelocks, up to three
-    /// per output (the amount, the address or key, and a change warning), the page note
-    /// and the key hint.
-    const LINES: usize = 12 + MAX_RELATIVE_SHOWN + 3 * PAGE;
+    /// Lines a page can hold: the totals and their warnings, the change, the timelocks, up
+    /// to three per output (the amount, the address or key, and a change warning), the
+    /// page note, the totals again under the last of several pages, and the key hint.
+    const LINES: usize = 17 + MAX_RELATIVE_SHOWN + 3 * PAGE;
     /// Relative locks named on the first page before the rest are only counted.
     const MAX_RELATIVE_SHOWN: usize = 4;
-    /// A row of the page's text, which remembers whether anything written to it was cut
-    /// off: a row short of its end is a page that cannot be shown whole.
-    struct Text {
-        text: heapless::String<72>,
-        cut: bool,
-    }
-    impl Text {
-        const fn new() -> Self {
-            Self {
-                text: heapless::String::new(),
-                cut: false,
-            }
-        }
-        fn as_str(&self) -> &str {
-            self.text.as_str()
-        }
-    }
-    impl core::fmt::Write for Text {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            // `push_str` writes all of `s` or none of it.
-            if self.text.push_str(s).is_err() {
-                self.cut = true;
-                return Err(core::fmt::Error);
-            }
-            Ok(())
-        }
-    }
+    type Text = Row;
 
     // Three kilobytes of text: in a heap block, not on the stack under the signing flow.
     // No room is a review that cannot be shown, and what is not shown is not signed.
@@ -1891,24 +1865,55 @@ fn review_page(
         return Page::Answered(false);
     };
     let texts = &mut *held;
-    let mut small: heapless::Vec<bool, LINES> = heapless::Vec::new();
+    let mut styles: heapless::Vec<Style, LINES> = heapless::Vec::new();
     // A line with no room is a page that cannot be shown whole, and is not shown.
     let lost = core::cell::Cell::new(false);
     let say = |texts: &mut heapless::Vec<Text, LINES>,
-               small_v: &mut heapless::Vec<bool, LINES>,
+               styles: &mut heapless::Vec<Style, LINES>,
                text: Text,
-               is_small: bool| {
-        if text.cut || texts.push(text).is_err() || small_v.push(is_small).is_err() {
+               style: Style| {
+        if text.cut || texts.push(text).is_err() || styles.push(style).is_err() {
             lost.set(true);
         }
+    };
+    let styles = &mut styles;
+
+    // The colour panel lays the page out to be scanned: the amount sent is the headline,
+    // read first, on its own line under a label; every other figure is a row with its
+    // name in grey at the left and the figure at the right, so the eye runs down one
+    // column of names and one of numbers. The one-bit panels have no width for two
+    // columns and keep each fact on one line of text.
+    let colour = display::FONTS.colour;
+
+    // Every output back to this wallet -- a consolidation -- sends nothing, and the
+    // headline says where the coins go instead of leading with a zero.
+    let (moved, moved_sats) = if summary.outputs > 0 && summary.change_outputs == summary.outputs {
+        (
+            if colour {
+                "Back to this wallet"
+            } else {
+                "To self"
+            },
+            summary.change,
+        )
+    } else {
+        ("Sending", summary.sending)
     };
 
     if start == 0 {
         let mut amount = heapless::String::<AMOUNT_LEN>::new();
-        btc(summary.sending, &mut amount);
+        btc(moved_sats, &mut amount);
         let mut line = Text::new();
-        let _ = write!(line, "Sending {amount}");
-        say(texts, &mut small, line, false);
+        if colour {
+            let _ = write!(line, "{moved}");
+            say(texts, styles, line, Style::Label);
+            let mut line = Text::new();
+            let _ = write!(line, "{amount}");
+            say(texts, styles, line, Style::Headline);
+        } else {
+            let _ = write!(line, "{moved} {amount}");
+            say(texts, styles, line, Style::Body);
+        }
 
         // The fee, or that there is none to state. A foreign input priced on the host's
         // word alone -- a coinjoin's -- leaves the fee unknown, and "unknown" is what
@@ -1916,31 +1921,58 @@ fn review_page(
         // way. Source: hw-reference/firmware-features.md §5 "Coinjoin / foreign inputs
         // supported (fee shown as unknown, with warnings)" [C]
         let mut line = Text::new();
-        if summary.fee_known {
-            let mut amount = heapless::String::<AMOUNT_LEN>::new();
-            btc(summary.fee, &mut amount);
-            let _ = write!(
-                line,
-                "Fee {amount} ({}%){}",
-                summary.fee_percent,
-                if summary.fee_warn { " HIGH" } else { "" }
-            );
-            say(texts, &mut small, line, false);
-        } else {
-            let _ = write!(line, "Fee UNKNOWN");
-            say(texts, &mut small, line, false);
+        let style = fee_line(summary, colour, &mut line);
+        say(texts, styles, line, style);
+        if !summary.fee_known {
             let mut line = Text::new();
             let _ = write!(
                 line,
                 "{} input(s) unverified: fee cap not checked",
                 summary.unpriced
             );
-            say(texts, &mut small, line, true);
+            say(texts, styles, line, Style::SmallWrap);
         }
 
         let mut line = Text::new();
-        let _ = write!(line, "{} of {} inputs ours", signable, summary.inputs);
-        say(texts, &mut small, line, true);
+        if colour {
+            let _ = write!(line, "Inputs");
+            let at = line.len();
+            let _ = write!(line, "{} of {} ours", signable, summary.inputs);
+            let style = Style::Pair {
+                at,
+                small: true,
+                muted: false,
+            };
+            say(texts, styles, line, style);
+        } else {
+            let _ = write!(line, "{} of {} inputs ours", signable, summary.inputs);
+            say(texts, styles, line, Style::Small);
+        }
+
+        // What comes back, beside what leaves: change sits wherever the host put it among
+        // the outputs, perhaps pages on, so its total is said up here with the rest.
+        if summary.change_outputs > 0 && summary.sending > 0 {
+            let mut amount = heapless::String::<AMOUNT_LEN>::new();
+            btc(summary.change, &mut amount);
+            let mut line = Text::new();
+            if colour {
+                let _ = write!(line, "Change");
+                if summary.change_outputs > 1 {
+                    let _ = write!(line, " ({} outputs)", summary.change_outputs);
+                }
+                let at = line.len();
+                let _ = write!(line, "{amount}");
+                let style = Style::Pair {
+                    at,
+                    small: true,
+                    muted: true,
+                };
+                say(texts, styles, line, style);
+            } else {
+                let _ = write!(line, "change {amount}");
+                say(texts, styles, line, Style::Small);
+            }
+        }
 
         // A computer's request signs only the keys it listed. Inputs this wallet could
         // sign with another key are left alone, and the review says how many, so a
@@ -1948,7 +1980,7 @@ fn review_page(
         if unlisted > 0 {
             let mut line = Text::new();
             let _ = write!(line, "{unlisted} more of ours NOT signed: not asked for");
-            say(texts, &mut small, line, true);
+            say(texts, styles, line, Style::SmallWrap);
         }
 
         // A bare P2PK input has no address to show, so the review says what it is.
@@ -1956,7 +1988,7 @@ fn review_page(
         if summary.p2pk_inputs > 0 {
             let mut line = Text::new();
             let _ = write!(line, "{} P2PK input(s)", summary.p2pk_inputs);
-            say(texts, &mut small, line, true);
+            say(texts, styles, line, Style::Small);
         }
 
         // An opted-in transaction is signed under the unified message, which only the
@@ -1967,7 +1999,7 @@ fn review_page(
         if summary.opted_in {
             let mut line = Text::new();
             let _ = write!(line, "OPT-IN sighash: fork only");
-            say(texts, &mut small, line, true);
+            say(texts, styles, line, Style::Small);
         }
 
         // An unusual sighash type was already warned about on its own screen; the row
@@ -1975,7 +2007,7 @@ fn review_page(
         if summary.odd_total > 0 {
             let mut line = Text::new();
             let _ = write!(line, "{} input(s) NOT SIGHASH_ALL", summary.odd_total);
-            say(texts, &mut small, line, true);
+            say(texts, styles, line, Style::Small);
         }
 
         // Timelocks, only when set. An absolute lock the network will not enforce --
@@ -1991,7 +2023,7 @@ fn review_page(
             if !lock.effective {
                 let _ = write!(line, " (INEFFECTIVE)");
             }
-            say(texts, &mut small, line, true);
+            say(texts, styles, line, Style::SmallWrap);
         }
         let tx = psbt.unsigned_tx();
         let mut relatives = 0usize;
@@ -2007,7 +2039,7 @@ fn review_page(
                 }
                 timelock::Relative::Seconds(s) => write!(line, "input {input}: wait {s} s"),
             };
-            say(texts, &mut small, line, true);
+            say(texts, styles, line, Style::Small);
         }
         if relatives > MAX_RELATIVE_SHOWN {
             let mut line = Text::new();
@@ -2016,9 +2048,13 @@ fn review_page(
                 "and {} more timelocked input(s)",
                 relatives - MAX_RELATIVE_SHOWN
             );
-            say(texts, &mut small, line, true);
+            say(texts, styles, line, Style::Small);
         }
     }
+
+    // Where the outputs start, for the rule above them. Look only: every line is the same
+    // text, in the same order, either way.
+    let outputs_from = texts.len();
 
     // Where this page sits, when it does not hold every output: more than a page of them,
     // or fewer that `review` had to split because they did not fit one.
@@ -2031,17 +2067,29 @@ fn review_page(
             start + shown.len(),
             summary.outputs
         );
-        say(texts, &mut small, line, true);
+        say(texts, styles, line, Style::Small);
     }
 
-    for d in shown {
+    for (n, d) in shown.iter().enumerate() {
         let mut amount = heapless::String::<AMOUNT_LEN>::new();
         btc(d.amount, &mut amount);
         let mut line = Text::new();
+        let _ = match (colour, d.change) {
+            (true, true) => write!(line, "Change"),
+            (true, false) => write!(line, "To"),
+            (false, true) => write!(line, "change "),
+            (false, false) => write!(line, "to "),
+        };
+        // Numbered where there are several, so a reader paging through twenty outputs
+        // that all start "To" knows which one they are on, and can find it in the
+        // wallet that made the transaction. The one-bit panels have no width for it.
+        if colour && summary.outputs > 1 {
+            let _ = write!(line, " #{}", start + n + 1);
+        }
+        let at = line.len();
         let _ = write!(
             line,
-            "{}{}{}",
-            if d.change { "change " } else { "to " },
+            "{}{}",
             amount,
             // A P2PK output has no address; the line names the form and the next line
             // carries the key.
@@ -2053,11 +2101,36 @@ fn review_page(
                 ""
             }
         );
-        say(texts, &mut small, line, true);
+        // On the colour panel each output is headed by a row a size above its address:
+        // where it goes on the left, how much on the right. Change, which comes back to
+        // this wallet, is in grey, so what leaves it is what stands out. The one-bit
+        // panels have no size to spare.
+        let style = if colour {
+            Style::Pair {
+                at,
+                small: false,
+                muted: d.change,
+            }
+        } else {
+            Style::Small
+        };
+        say(texts, styles, line, style);
         if d.address_len > 0 {
             let mut line = Text::new();
-            let _ = write!(line, "{}", d.address());
-            say(texts, &mut small, line, true);
+            // In blocks of four where there is the width for them, the way the address's
+            // QR screen shows it: what a person compares against their wallet is easier
+            // to keep their place in that way. Too long to block within the line's room,
+            // it is shown whole rather than cut short.
+            if !(colour && blocked(d.address(), &mut line.text)) {
+                line.clear();
+                let _ = write!(line, "{}", d.address());
+            }
+            let style = if colour {
+                Style::Address { muted: d.change }
+            } else {
+                Style::SmallWrap
+            };
+            say(texts, styles, line, style);
         }
         // Stock's suspicious-change warning: proven change, on a path no wallet would
         // choose. Said with the path, so the owner can see for themselves; not a
@@ -2078,42 +2151,98 @@ fn review_page(
                 let mut line = Text::new();
                 let take = row_break(rest, line.text.capacity());
                 let _ = line.write_str(&rest[..take]);
-                say(texts, &mut small, line, true);
+                say(texts, styles, line, Style::Warn);
                 rest = &rest[take..];
             }
         }
     }
 
-    let mut line = Text::new();
-    if last {
-        let _ = write!(
-            line,
-            "{} sign   {} cancel",
-            display::CONFIRM_KEY,
-            display::CANCEL_KEY
-        );
-    } else {
-        let _ = write!(
-            line,
-            "{} next page   {} cancel",
-            display::CONFIRM_KEY,
-            display::CANCEL_KEY
-        );
+    // The totals again where the Sign key is, when they are pages back: the last thing
+    // read before signing is what the whole transaction does, not its last output.
+    let totals_from = texts.len();
+    let totals_again = last && start > 0;
+    if totals_again {
+        let mut amount = heapless::String::<AMOUNT_LEN>::new();
+        btc(moved_sats, &mut amount);
+        let mut line = Text::new();
+        let _ = write!(line, "{moved}");
+        let at = line.len();
+        if !colour {
+            let _ = line.push(' ');
+        }
+        let _ = write!(line, "{amount}");
+        let style = if colour {
+            Style::Pair {
+                at,
+                small: false,
+                muted: false,
+            }
+        } else {
+            Style::Body
+        };
+        say(texts, styles, line, style);
+        let mut line = Text::new();
+        let style = fee_line(summary, colour, &mut line);
+        say(texts, styles, line, style);
     }
-    say(texts, &mut small, line, true);
 
-    let mut doc: heapless::Vec<Line, { LINES + 1 }> = heapless::Vec::new();
+    // What the two keys do. The Q1 says it in the foot `scroll_choice_as` pins under the
+    // document; the one-bit panels have no foot, so it is the document's last line.
+    let (accept, reject) = (if last { "sign" } else { "next page" }, "cancel");
+    if !cfg!(feature = "board-q1") {
+        let mut line = Text::new();
+        let _ = write!(
+            line,
+            "{} {accept}   {} {reject}",
+            display::CONFIRM_KEY,
+            display::CANCEL_KEY
+        );
+        say(texts, styles, line, Style::Keys);
+    }
+
+    let mut doc: heapless::Vec<Line, { LINES + 3 }> = heapless::Vec::new();
     let _ = doc.push(Line::title("Sign transaction"));
-    for (i, text) in texts.iter().enumerate() {
-        let mut l = Line::body(text.as_str());
-        if small[i] {
-            l = l.small();
+    for (i, (text, style)) in texts.iter().zip(styles.iter()).enumerate() {
+        // The totals above, the outputs below: a rule between, where there are both; and
+        // one over the totals repeated at the end.
+        if (i == outputs_from && i > 0) || (totals_again && i == totals_from) {
+            lost.set(lost.get() || doc.push(Line::divider()).is_err());
         }
         // Every row may wrap. A row too wide for the panel is otherwise cut at its right
         // edge -- an amount's last digits, or "HIGH" after a fee -- and still counts as
         // shown; wrapped, a word wider than the row is split rather than lost.
-        l = l.wrapped();
-        lost.set(lost.get() || doc.push(l).is_err());
+        let l = Line::body(text.as_str()).wrapped();
+        let pushed = doc.push(match *style {
+            Style::Label => l.small().muted(),
+            Style::Headline => l.large(),
+            Style::Body => l,
+            Style::Small => l.small(),
+            Style::SmallWrap => l.small().wrapped(),
+            Style::Pair { at, small, muted } => {
+                let (label, value) = text.as_str().split_at(at);
+                let l = Line::body(label).aside(value);
+                match (small, muted) {
+                    (true, true) => l.small().muted(),
+                    (true, false) => l.small(),
+                    (false, true) => l.muted(),
+                    (false, false) => l,
+                }
+            }
+            // Behind the value bar, which ties it to the row above. Its indent costs
+            // the line a few characters, which in blocks of four only moves where the
+            // line breaks between blocks.
+            Style::Address { muted } => {
+                let l = l.small().wrapped().value();
+                if muted { l.muted() } else { l }
+            }
+            // Under the output it is about, behind the same bar, in the accent: proven
+            // change, but somewhere the owner's wallet will not look.
+            Style::Warn if colour => l.small().wrapped().value().warn(),
+            Style::Warn => l.small().wrapped(),
+            // Instructions, not part of the transaction.
+            Style::Keys => l.small().centered().muted(),
+        });
+        lost.set(lost.get() || pushed.is_err());
     }
 
     let mut view = ScrollView::build(&doc, display::SCREEN_W, display::SCREEN_H, display::FONTS);
@@ -2122,7 +2251,52 @@ fn review_page(
     if lost.get() || !view.whole() {
         return Page::TooLong;
     }
-    Page::Answered(menu::scroll_choice(ui, &mut view))
+    Page::Answered(menu::scroll_choice_as(ui, &mut view, accept, reject))
+}
+
+/// A row of the review's text, which remembers whether anything written to it was cut
+/// off: a row short of its end is a page that cannot be shown whole. Long enough for a
+/// 66-character public key in blocks of four.
+struct Row {
+    text: heapless::String<88>,
+    cut: bool,
+}
+
+impl Row {
+    const fn new() -> Self {
+        Self {
+            text: heapless::String::new(),
+            cut: false,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        self.text.as_str()
+    }
+
+    fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    fn push(&mut self, c: char) -> core::fmt::Result {
+        core::fmt::Write::write_char(self, c)
+    }
+
+    fn clear(&mut self) {
+        self.text.clear();
+        self.cut = false;
+    }
+}
+
+impl core::fmt::Write for Row {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        // `push_str` writes all of `s` or none of it.
+        if self.text.push_str(s).is_err() {
+            self.cut = true;
+            return Err(core::fmt::Error);
+        }
+        Ok(())
+    }
 }
 
 /// The unusual-change warning at its longest: "unusual change path ", a path of
@@ -2141,4 +2315,109 @@ fn row_break(text: &str, cap: usize) -> usize {
         .iter()
         .rposition(|&b| b == b'/' || b == b' ')
         .map_or(cap, |i| i + 1)
+}
+
+/// How a line of the transaction review is set.
+#[derive(Copy, Clone)]
+enum Style {
+    /// Names the line under it: small, in the secondary ink.
+    Label,
+    /// The amount being sent, in the largest face the panel has.
+    Headline,
+    Body,
+    Small,
+    /// Small, and wrapped where it is longer than the line.
+    SmallWrap,
+    /// A label and its value on one row, the value at the right: the text's first `at`
+    /// bytes are the label. Small or body face; muted for what is not news.
+    Pair {
+        at: usize,
+        small: bool,
+        muted: bool,
+    },
+    /// A warning about the output above, wrapped: in the accent and behind the output's
+    /// bar on the colour panel.
+    Warn,
+    /// An output's address or key under its row, wrapped behind the value bar.
+    Address {
+        muted: bool,
+    },
+    /// What the keys do, on a panel with no foot to say it in.
+    Keys,
+}
+
+/// `text` in blocks of four characters with a space between, into `out`. False, with
+/// `out` part-written, if the blocked text is longer than `out` holds.
+fn blocked<const N: usize>(text: &str, out: &mut heapless::String<N>) -> bool {
+    let len = text.len() + text.len().saturating_sub(1) / 4;
+    if len > N || !text.is_ascii() {
+        return false;
+    }
+    for (i, ch) in text.chars().enumerate() {
+        if i > 0 && i % 4 == 0 && out.push(' ').is_err() {
+            return false;
+        }
+        if out.push(ch).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// The fee line of the review, into `line`, and how it is set.
+///
+/// Known, it is the amount and its share, with HIGH past the policy's warning level; on
+/// the colour panel a label and value a size down, so the headline above it stands out by
+/// everything round it being smaller. Unknown, it says so in the body face: a warning,
+/// which the caller follows with why.
+fn fee_line(summary: &psbtview::Summary, colour: bool, line: &mut Row) -> Style {
+    use core::fmt::Write as _;
+    if !summary.fee_known {
+        let _ = write!(line, "Fee UNKNOWN");
+        return Style::Body;
+    }
+    let mut amount = heapless::String::<AMOUNT_LEN>::new();
+    btc(summary.fee, &mut amount);
+    let _ = write!(line, "Fee");
+    let at = line.len();
+    if !colour {
+        let _ = line.push(' ');
+    }
+    let _ = write!(line, "{amount} (");
+    // A consolidation sends nothing, and its share is of what it moves: the inputs, as
+    // `psbtview::summarise` measured it.
+    let base = if summary.sending == 0 {
+        summary.total_in
+    } else {
+        summary.sending
+    };
+    let _ = fee_share(summary.fee, base, summary.fee_percent, line);
+    let _ = write!(line, "){}", if summary.fee_warn { " HIGH" } else { "" });
+    if colour {
+        Style::Pair {
+            at,
+            small: true,
+            muted: false,
+        }
+    } else {
+        Style::Body
+    }
+}
+
+/// The fee as a share of `base` -- what is sent, or for a consolidation what is moved --
+/// to the hundredth of a percent and rounded up, so the screen never says a fee is
+/// smaller than it is: a 0.14% fee read "0%" when only whole percents were shown. A zero
+/// base has no share to give, and shows the whole percent the policy check used. The
+/// check itself is unchanged; this is what the owner reads.
+fn fee_share(
+    fee: u64,
+    base: u64,
+    whole: u32,
+    out: &mut impl core::fmt::Write,
+) -> core::fmt::Result {
+    if base == 0 {
+        return write!(out, "{whole}%");
+    }
+    let hundredths = (u128::from(fee) * 10_000).div_ceil(u128::from(base));
+    write!(out, "{}.{:02}%", hundredths / 100, hundredths % 100)
 }

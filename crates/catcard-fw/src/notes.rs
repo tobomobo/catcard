@@ -367,16 +367,21 @@ fn view_stock(ui: &mut Ui<'_>, raw: &str) {
     };
     let mut rows: heapless::Vec<Row, 24> = heapless::Vec::new();
     let _ = rows.push(Row::title(HEAD));
-    let _ = rows.push(Row::body("written by stock: read-only").small().centered());
+    let _ = rows.push(
+        Row::body("written by stock: read-only")
+            .small()
+            .centered()
+            .muted(),
+    );
     for e in note.entries() {
         let Some(value) = keep(&mut arena, e.raw) else {
-            let _ = rows.push(Row::body(e.key).small());
-            let _ = rows.push(Row::body("(too long to show)").small());
+            let _ = rows.push(Row::body(e.key).small().muted());
+            let _ = rows.push(Row::body("(too long to show)").small().muted().value());
             continue;
         };
-        let _ = rows.push(Row::body(e.key).small());
+        let _ = rows.push(Row::body(e.key).small().muted());
         let secret = matches!(e.key, "password" | "pw" | "pass" | "secret" | "pin");
-        let row = Row::body(value).wrapped();
+        let row = Row::body(value).wrapped().value();
         let _ = rows.push(if secret { row.secret() } else { row });
     }
     let _ = menu::show_doc(ui, &rows, true, false);
@@ -444,38 +449,41 @@ fn open(
         let _ = rows.push(Row::title(item.title));
         match item.kind {
             Kind::Note => {
-                let _ = rows.push(Row::body(item.body).wrapped());
-                let _ = rows.push(Row::item("Edit", EDIT));
+                let _ = rows.push(Row::body(item.body).wrapped().value());
+                let _ = rows.push(Row::divider());
+                let _ = rows.push(Row::item("Edit", EDIT).action());
             }
             Kind::Password => {
                 if !item.user.is_empty() {
-                    let _ = rows.push(Row::body("user").small());
-                    let _ = rows.push(Row::body(item.user).wrapped());
+                    let _ = rows.push(Row::body("user").small().muted());
+                    let _ = rows.push(Row::body(item.user).wrapped().value());
                 }
                 if !item.site.is_empty() {
-                    let _ = rows.push(Row::body("site").small());
-                    let _ = rows.push(Row::body(item.site).wrapped());
+                    let _ = rows.push(Row::body("site").small().muted());
+                    let _ = rows.push(Row::body(item.site).wrapped().value());
                 }
                 if !item.body.is_empty() {
-                    let _ = rows.push(Row::body("notes").small());
-                    let _ = rows.push(Row::body(item.body).wrapped());
+                    let _ = rows.push(Row::body("notes").small().muted());
+                    let _ = rows.push(Row::body(item.body).wrapped().value());
                 }
-                let _ = rows.push(Row::item("View Password", VIEW_PW));
+                // What is stored above, what can be done with it below.
+                let _ = rows.push(Row::divider());
+                let _ = rows.push(Row::item("View Password", VIEW_PW).action());
                 // Always offered, as stock offers it; the screen says so if the
                 // keyboard is off. Source: menu-map §N "Password detail" [C]
-                let _ = rows.push(Row::item("Send Password", SEND_PW));
+                let _ = rows.push(Row::item("Send Password", SEND_PW).action());
                 if !item.totp.is_empty() {
-                    let _ = rows.push(Row::item("TOTP code", TOTP));
+                    let _ = rows.push(Row::item("TOTP code", TOTP).action());
                 }
-                let _ = rows.push(Row::item("Edit Metadata", EDIT_META));
-                let _ = rows.push(Row::item("Change Password", CHANGE_PW));
+                let _ = rows.push(Row::item("Edit Metadata", EDIT_META).action());
+                let _ = rows.push(Row::item("Change Password", CHANGE_PW).action());
             }
         }
-        let _ = rows.push(Row::item("Delete", DELETE));
-        let _ = rows.push(Row::item("Export", EXPORT_ONE));
-        let _ = rows.push(Row::item("Sign Note Text", SIGN));
+        let _ = rows.push(Row::item("Delete", DELETE).action());
+        let _ = rows.push(Row::item("Export", EXPORT_ONE).action());
+        let _ = rows.push(Row::item("Sign Note Text", SIGN).action());
         if item.kind == Kind::Password && words_wallet {
-            let _ = rows.push(Row::item("Apply as BIP-39 Passphrase", APPLY_PP));
+            let _ = rows.push(Row::item("Apply as BIP-39 Passphrase", APPLY_PP).action());
         }
 
         let outcome = match menu::show_doc(ui, &rows, false, false) {
@@ -539,8 +547,8 @@ fn open(
 fn view_password(ui: &mut Ui<'_>, item: &Item<'_>) {
     let rows = [
         Row::title(item.title),
-        Row::body("password").small(),
-        Row::body(item.password).secret().wrapped(),
+        Row::body("password").small().muted(),
+        Row::body(item.password).secret().wrapped().value(),
     ];
     let _ = menu::show_doc(ui, &rows, true, false);
 }
@@ -824,16 +832,23 @@ fn confirm_change(ui: &mut Ui<'_>, changes: &[(&str, &str, &str)]) -> bool {
             continue;
         }
         any = true;
-        let _ = rows.push(Row::body(label).small());
-        let _ = rows.push(Row::body(if old.is_empty() { "(empty)" } else { old }).wrapped());
-        let _ = rows.push(Row::body("becomes").small().centered());
-        let _ = rows.push(Row::body(if new.is_empty() { "(empty)" } else { new }).wrapped());
+        let _ = rows.push(Row::body(label).small().muted());
+        let old = if old.is_empty() { "(empty)" } else { old };
+        let new = if new.is_empty() { "(empty)" } else { new };
+        let _ = rows.push(Row::body(old).wrapped().value());
+        let _ = rows.push(Row::body("becomes").small().centered().muted());
+        let _ = rows.push(Row::body(new).wrapped().value());
     }
     if !any {
         say(ui, "nothing changed");
         return false;
     }
-    let _ = rows.push(Row::body("ENTER saves, CANCEL discards").small().centered());
+    let _ = rows.push(
+        Row::body("ENTER saves, CANCEL discards")
+            .small()
+            .centered()
+            .muted(),
+    );
     matches!(menu::show_doc(ui, &rows, false, false), DocExit::Confirmed)
 }
 
@@ -845,11 +860,14 @@ fn confirm_secret_change(ui: &mut Ui<'_>, old: &str, new: &str) -> bool {
     }
     let rows = [
         Row::title("Change password?"),
-        Row::body("old").small(),
-        Row::body(old).secret().wrapped(),
-        Row::body("new").small(),
-        Row::body(new).secret().wrapped(),
-        Row::body("ENTER saves, CANCEL discards").small().centered(),
+        Row::body("old").small().muted(),
+        Row::body(old).secret().wrapped().value(),
+        Row::body("new").small().muted(),
+        Row::body(new).secret().wrapped().value(),
+        Row::body("ENTER saves, CANCEL discards")
+            .small()
+            .centered()
+            .muted(),
     ];
     matches!(menu::show_doc(ui, &rows, true, false), DocExit::Confirmed)
 }
@@ -1546,7 +1564,9 @@ fn read_into(
     note: &str,
     input: &mut Input<{ notes::MAX_BODY }>,
 ) -> bool {
+    #[cfg(not(feature = "board-q1"))]
     use catcard_ui::canvas::Canvas as _;
+    #[cfg(not(feature = "board-q1"))]
     use catcard_ui::text::{centred, draw_text};
 
     // A line break in a stored body has no key here, so an edit shows it as what the
@@ -1559,6 +1579,7 @@ fn read_into(
         41..=100 => 2,
         _ => 5,
     };
+    #[cfg(not(feature = "board-q1"))]
     let top_y = display::FIELD_TOP;
     let mut events = [Event::Pressed(Key::Cancel); KEYS];
     let mut keys: heapless::Vec<Key, { KEYS + 1 }> = heapless::Vec::new();
@@ -1566,8 +1587,6 @@ fn read_into(
 
     loop {
         {
-            let fields = [Field::text(label, input.as_str()).lines(lines).live(true)];
-            let body = display::LAYOUT.body;
             let foot = if !complaint.is_empty() {
                 complaint
             } else if !note.is_empty() {
@@ -1575,27 +1594,50 @@ fn read_into(
             } else {
                 "type, then ENTER"
             };
-            display::draw_field_page(ui.panel, |c| {
-                c.clear();
-                let hx = centred(body, head, c.width());
-                draw_text(
-                    c,
-                    body,
-                    hx,
-                    top_y.saturating_sub(body.line_height() + 6),
-                    head,
-                );
-                let below = field::stack(
-                    c,
-                    &display::LAYOUT,
-                    top_y,
-                    &fields,
-                    display::FIELD_SKIN,
-                    true,
-                );
-                let fx = centred(body, foot, c.width());
-                draw_text(c, body, fx, below + 6, foot);
-            });
+            // The Q1: the page's name across the top, the field's name over the card in
+            // grey, and only what was typed inside it.
+            #[cfg(feature = "board-q1")]
+            {
+                let fields = [Field::text("", input.as_str()).lines(lines).live(true)];
+                display::draw_field_page(ui.panel, |c| {
+                    field::page(
+                        c,
+                        &display::LAYOUT,
+                        head,
+                        label,
+                        &fields,
+                        display::FIELD_SKIN,
+                        true,
+                        foot,
+                    );
+                });
+            }
+            #[cfg(not(feature = "board-q1"))]
+            {
+                let fields = [Field::text(label, input.as_str()).lines(lines).live(true)];
+                let body = display::LAYOUT.body;
+                display::draw_field_page(ui.panel, |c| {
+                    c.clear();
+                    let hx = centred(body, head, c.width());
+                    draw_text(
+                        c,
+                        body,
+                        hx,
+                        top_y.saturating_sub(body.line_height() + 6),
+                        head,
+                    );
+                    let below = field::stack(
+                        c,
+                        &display::LAYOUT,
+                        top_y,
+                        &fields,
+                        display::FIELD_SKIN,
+                        true,
+                    );
+                    let fx = centred(body, foot, c.width());
+                    draw_text(c, body, fx, below + 6, foot);
+                });
+            }
         }
         menu::wait_for_release(ui);
 

@@ -21,27 +21,47 @@ fn ink_in(canvas: &Gray320x240, x0: usize, x1: usize, y0: usize, y1: usize) -> u
     sum
 }
 
-/// The whole point: a held modifier is brighter than one that is not.
+/// The whole point: a held modifier is a chip that was not there before.
 ///
 /// A passphrase typed with SHIFT held is a different passphrase, opening a different and
-/// empty wallet with nothing to say so. This indicator is the only warning there is.
+/// empty wallet with nothing to say so. This indicator is the only warning there is, so
+/// it is the one thing in the bar that appears.
 #[test]
-fn a_held_modifier_is_brighter_than_one_that_is_not() {
+fn a_held_modifier_appears_as_a_chip() {
     let h = height(&FONT);
+    let at = MARGIN + width_of(&FONT, WIDEST_KEY) + GROUP_GAP;
+    let shift_w = width_of(&FONT, "SHIFT") + 2 * CHIP_PAD;
     let up = bar(&Status::default());
     let down = bar(&Status {
         shift: true,
         ..Status::default()
     });
-
-    // "SHIFT" is the first word, in the left margin.
-    let quiet = ink_in(&up, 0, 40, 0, h);
-    let loud = ink_in(&down, 0, 40, 0, h);
-    assert!(quiet > 0, "an inactive modifier should still be legible");
-    assert!(
-        loud > quiet,
-        "holding SHIFT did not brighten it: {quiet} -> {loud}"
+    assert_eq!(
+        ink_in(&up, at, at + shift_w, 0, h - 1),
+        0,
+        "nothing while up"
     );
+    // Mostly white: a filled chip, the name knocked out of it.
+    let lit = ink_in(&down, at, at + shift_w, 0, h - 1);
+    let full = (shift_w * (h - 1)) as u32 * INK as u32;
+    assert!(lit > full / 2, "SHIFT held is not a chip: {lit} of {full}");
+}
+
+/// A chip appearing moves nothing else in the bar.
+#[test]
+fn the_modifiers_keep_their_places() {
+    let one = bar(&Status {
+        caps: true,
+        ..Status::default()
+    });
+    let all = bar(&Status {
+        shift: true,
+        symbol: true,
+        caps: true,
+        ..Status::default()
+    });
+    let caps = |c: &Gray320x240| (0..320).rev().find(|&x| c.get(x, 2) == INK);
+    assert_eq!(caps(&one), caps(&all), "CAPS moved");
 }
 
 /// Each indicator responds to its own flag and not to another's.

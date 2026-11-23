@@ -185,145 +185,78 @@ pub fn hint_width<F: crate::face::Face + ?Sized>(font: &F, label: &str) -> usize
     ICON_ADVANCE * icon_scale(font) + crate::text::width_of(font, label)
 }
 
-/// A cat's paw print, facing right: the big pad behind, four toes in an arc ahead. 9x10.
-///
-/// Stands in for the `*` a PIN field used to show, one print per digit. Facing right
-/// because the trail grows to the right as digits go in: the cat walks the way the text
-/// would have.
-pub const PAW: Bitmap = Bitmap {
-    width: 9,
-    height: 10,
-    bytes_per_row: 2,
-    // .....##..
-    // .....##..
-    // ..##...##
-    // .####..##
-    // ######...
-    // ######...
-    // .####..##
-    // ..##...##
-    // .....##..
-    // .....##..
-    pixels: &[
-        0x06, 0x00, 0x06, 0x00, 0x31, 0x80, 0x79, 0x80, 0xFC, 0x00, //
-        0xFC, 0x00, 0x79, 0x80, 0x31, 0x80, 0x06, 0x00, 0x06, 0x00,
-    ],
-};
+/// Radius of a typed place's dot in a [`draw_dot_row`], at scale 1.
+pub const DOT_R: usize = 3;
+/// Radius of a place still to fill.
+const SLOT_R: usize = 1;
+/// From one place's centre to the next, at scale 1.
+const DOT_STEP: usize = 10;
 
-/// The paw print at the size the Q1 draws it: 27x30, its own art rather than [`PAW`]
-/// scaled three times into 3x3 blocks.
+/// The box a row of `max` places occupies at `scale`: (width, height).
 ///
-/// Exactly three times [`PAW`]'s footprint, which is what the trail, the login card's rows
-/// and the caret are laid out from -- so this can be redrawn but not resized. From
-/// `art/paw-right-27x30.png` via `tools/artgen/paw.py`.
-#[rustfmt::skip]
-pub const PAW_3X: Bitmap = Bitmap {
-    width: 27,
-    height: 30,
-    bytes_per_row: 4,
-    // ...........................
-    // ..............###..........
-    // .............#####.........
-    // ............#######........
-    // ...........########........
-    // ...........#######.........
-    // ...........######..........
-    // .....###....####...###.....
-    // ....#####....##...#####....
-    // ...#######.......#######...
-    // ..#########.....########...
-    // ..#########.....########...
-    // ..###########...######.....
-    // ...###########...####......
-    // ...############............
-    // ...############............
-    // ...############...####.....
-    // ...############..#######...
-    // ..############...#######...
-    // ..###########....#######...
-    // ..##########......#####....
-    // ..#########................
-    // ...#######....###..........
-    // ....#####....#####.........
-    // .....###....#######........
-    // ............########.......
-    // .............#######.......
-    // ..............#####........
-    // ...............####........
-    // ...........................
-    pixels: &[
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x80, 0x00, 0x00, 0x07, 0xC0, 0x00, 0x00, 0x0F, 0xE0, 0x00,
-        0x00, 0x1F, 0xE0, 0x00, 0x00, 0x1F, 0xC0, 0x00, 0x00, 0x1F, 0x80, 0x00, 0x07, 0x0F, 0x1C, 0x00,
-        0x0F, 0x86, 0x3E, 0x00, 0x1F, 0xC0, 0x7F, 0x00, 0x3F, 0xE0, 0xFF, 0x00, 0x3F, 0xE0, 0xFF, 0x00,
-        0x3F, 0xF8, 0xFC, 0x00, 0x1F, 0xFC, 0x78, 0x00, 0x1F, 0xFE, 0x00, 0x00, 0x1F, 0xFE, 0x00, 0x00,
-        0x1F, 0xFE, 0x3C, 0x00, 0x1F, 0xFE, 0x7F, 0x00, 0x3F, 0xFC, 0x7F, 0x00, 0x3F, 0xF8, 0x7F, 0x00,
-        0x3F, 0xF0, 0x3E, 0x00, 0x3F, 0xE0, 0x00, 0x00, 0x1F, 0xC3, 0x80, 0x00, 0x0F, 0x87, 0xC0, 0x00,
-        0x07, 0x0F, 0xE0, 0x00, 0x00, 0x0F, 0xF0, 0x00, 0x00, 0x07, 0xF0, 0x00, 0x00, 0x03, 0xE0, 0x00,
-        0x00, 0x01, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ],
-};
-const _: () = assert!(PAW_3X.width == 3 * PAW.width && PAW_3X.height == 3 * PAW.height);
-
-/// Horizontal distance from one print to the next, in unscaled pixels.
-///
-/// Less than a print's width: consecutive prints sit on opposite halves of the trail, so
-/// they overlap in x without touching, and a trail of alternating left and right feet reads
-/// as a gait rather than as a row of stamps.
-const PAW_STEP: usize = 8;
-
-/// The box a trail of `max` prints occupies at `scale`: (width, height).
-///
-/// The height is a print and a half plus a gap, so the upper and lower prints clear each
-/// other. Sized for the most prints the field can hold, not for how many it holds now, so
-/// the caller can place the trail once and the cat walks across a fixed stretch instead of
-/// the whole trail sliding sideways with every digit.
-pub const fn paw_trail_size(max: usize, scale: usize) -> (usize, usize) {
-    let w = PAW.width as usize;
-    let h = PAW.height as usize;
-    let width = if max == 0 {
+/// Sized for the most places the field holds, not for how many are filled, so the caller
+/// places the row once and the dots fill it from the left: nothing already drawn moves
+/// when a digit goes in.
+pub const fn dot_row_size(max: usize, scale: usize) -> (usize, usize) {
+    let d = 2 * DOT_R + 1;
+    let w = if max == 0 {
         0
     } else {
-        (max - 1) * PAW_STEP + w
+        (max - 1) * DOT_STEP + d
     };
-    (width * scale, (h + h / 2 + 2) * scale)
+    (w * scale, d * scale)
 }
 
-/// Draw `count` paw prints walking right from `(x, y)`, alternating between the top and the
-/// bottom of the trail's box -- the first print high, the next low, like a cat's two
-/// front feet.
+/// A row of `max` places from `(x, y)`, the top-left of its [`dot_row_size`] box: a filled
+/// dot in `ink` for each of the first `typed`, and a small one in `slot`, where given, for
+/// each still to come.
 ///
-/// `(x, y)` is the box's top-left as [`paw_trail_size`] describes it.
-pub fn draw_paw_trail<C: crate::canvas::Canvas + ?Sized>(
+/// One dot per digit, the same as a `*` gave away -- how many, and nothing about which.
+/// The small dots say how many the row holds before anything is typed.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_dot_row<C: crate::canvas::Canvas + ?Sized>(
     fb: &mut C,
-    count: usize,
+    typed: usize,
+    max: usize,
     x: usize,
     y: usize,
     scale: usize,
-) {
-    draw_paw_trail_in(fb, count, x, y, scale, crate::canvas::INK);
-}
-
-/// [`draw_paw_trail`] in a chosen ink, for a trail walking across a light field.
-pub fn draw_paw_trail_in<C: crate::canvas::Canvas + ?Sized>(
-    fb: &mut C,
-    count: usize,
-    x: usize,
-    y: usize,
-    scale: usize,
-    level: crate::canvas::Level,
+    ink: crate::canvas::Level,
+    slot: Option<crate::canvas::Level>,
 ) {
     let scale = scale.max(1);
-    let (_, box_h) = paw_trail_size(1, scale);
-    let low = box_h - PAW.height as usize * scale;
-    // At three times, the print drawn at that size; anywhere else, the small one scaled.
-    let (art, by) = if scale == 3 {
-        (&PAW_3X, 1)
-    } else {
-        (&PAW, scale)
-    };
-    for i in 0..count {
-        let top = if i % 2 == 0 { y } else { y + low };
-        crate::splash::draw_bitmap_scaled_in(fb, art, x + i * PAW_STEP * scale, top, by, level);
+    let cy = y + DOT_R * scale;
+    for i in 0..max {
+        let cx = x + (i * DOT_STEP + DOT_R) * scale;
+        if i < typed {
+            disc(fb, cx, cy, DOT_R * scale, ink);
+        } else if let Some(slot) = slot {
+            disc(fb, cx, cy, SLOT_R * scale, slot);
+        }
+    }
+}
+
+/// A filled circle of radius `r` centred on `(cx, cy)`.
+pub fn disc<C: crate::canvas::Canvas + ?Sized>(
+    c: &mut C,
+    cx: usize,
+    cy: usize,
+    r: usize,
+    ink: crate::canvas::Level,
+) {
+    let r = r as isize;
+    // A half-pixel's grace on the edge, so small circles come out round, not diamond.
+    let limit = r * r + r;
+    for dy in -r..=r {
+        let mut half = 0;
+        while (half + 1) * (half + 1) + dy * dy <= limit {
+            half += 1;
+        }
+        let y = cy as isize + dy;
+        let x = cx as isize - half;
+        if y >= 0 && x >= 0 {
+            c.fill_rect(x as usize, y as usize, (2 * half + 1) as usize, 1, ink);
+        }
     }
 }
 
@@ -332,36 +265,6 @@ mod tests {
     use super::*;
     use crate::canvas::{Canvas, Gray320x240, PAPER};
     use crate::font::{misc4x6, peep7x14};
-
-    /// The large print is a paw facing right, in the box every layout is built from: the
-    /// pad behind, on the left, through the middle rows; toes ahead of it, on the right;
-    /// and ink over a fair part of the box, so a blank or a stray pixel cannot pass for a
-    /// print. The footprint itself is held by the `const` assertion above.
-    #[test]
-    fn the_large_print_is_a_paw_that_fills_its_box() {
-        let (w, h) = (PAW_3X.width as usize, PAW_3X.height as usize);
-        let lit = (0..h)
-            .flat_map(|y| (0..w).map(move |x| (x, y)))
-            .filter(|&(x, y)| PAW_3X.pixel(x, y))
-            .count();
-        assert!(
-            (w * h / 5..w * h / 2).contains(&lit),
-            "{lit} lit of {}",
-            w * h
-        );
-        let ink_in = |xs: core::ops::Range<usize>, ys: core::ops::Range<usize>| {
-            ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
-                .filter(|&(x, y)| PAW_3X.pixel(x, y))
-                .count()
-        };
-        // The pad: the middle rows of the left half, solidly.
-        assert!(ink_in(0..w / 2, 13..17) > 30, "no pad");
-        // The toes: ahead of it, above and below the middle.
-        assert!(ink_in(w / 2..w, 0..12) > 20, "no toes above");
-        assert!(ink_in(w / 2..w, 18..h) > 20, "no toes below");
-        // Nothing in the far corners: a print, not a block.
-        assert_eq!(ink_in(0..4, 0..4) + ink_in(w - 4..w, h - 4..h), 0);
-    }
 
     #[test]
     fn a_word_mark_reads_as_the_cap_does_and_measures_the_same() {
@@ -500,72 +403,52 @@ mod tests {
     }
 
     #[test]
-    fn a_paw_print_faces_right() {
-        // Toes ahead, pad behind: the tallest column of ink is on the left (the pad) and
-        // the rightmost ink belongs to toes, which sit apart from the pad.
-        let col = |x: usize| {
-            (0..PAW.height as usize)
-                .filter(|&y| PAW.pixel(x, y))
-                .count()
-        };
-        assert_eq!(col(0), 2, "the pad's back edge");
-        assert!(col(1) > col(0) && col(1) >= 4, "the pad is on the left");
-        let right = (0..PAW.width as usize).rev().find(|&x| col(x) > 0).unwrap();
-        assert!(
-            !PAW.pixel(right, 4) && !PAW.pixel(right, 5),
-            "the middle row ahead is toe-free"
-        );
-    }
-
-    #[test]
-    fn the_longest_pin_part_leaves_a_trail_that_fits_both_panels() {
-        // Six digits is the most a PIN part can have; the trail for it must fit the mono
-        // panel at 1x and the Q1 at 3x without clipping a print.
-        let (w, h) = paw_trail_size(6, 1);
+    fn the_longest_pin_part_fits_both_panels() {
+        // Six digits is the most a PIN part can have; its row must fit the mono panel at
+        // 1x and the Q1 at 3x.
+        let (w, h) = dot_row_size(6, 1);
         assert!(w <= 128 && h <= 22, "mono: {w}x{h}");
-        let (w, h) = paw_trail_size(6, 3);
+        let (w, h) = dot_row_size(6, 3);
         assert!(w <= 320 && h <= 82, "q1: {w}x{h}");
     }
 
     #[test]
-    fn prints_alternate_high_and_low_and_never_touch() {
+    fn typed_places_are_dots_and_the_rest_are_smaller() {
         let mut c = Mono128x64::new();
-        draw_paw_trail(&mut c, 6, 10, 20, 1);
-        let (_, box_h) = paw_trail_size(6, 1);
-        let lows = box_h - PAW.height as usize;
-        for i in 0..6 {
-            let x0 = 10 + i * PAW_STEP;
-            let top = if i % 2 == 0 { 20 } else { 20 + lows };
-            // The print's pad (rows 4-5, columns 0-5) is where this print says it is...
-            assert_eq!(Canvas::get(&c, x0, top + 4), INK, "print {i} missing");
-            // ...and the other half of the trail is clear at the same column, so a high
-            // and a low foot never land on each other.
-            let other = if i % 2 == 0 { 20 + lows } else { 20 };
-            assert!(
-                (0..PAW.height as usize).all(|dy| Canvas::get(&c, x0, other + dy) != INK
-                    || (i > 0 && x0 < 10 + (i - 1) * PAW_STEP + PAW.width as usize)),
-                "print {i} overlaps the other foot"
-            );
-        }
-        // Six prints, each the paw's own ink count: none merged, none clipped.
-        let per_print = (0..PAW.height as usize)
-            .flat_map(|y| (0..PAW.width as usize).map(move |x| (x, y)))
-            .filter(|&(x, y)| PAW.pixel(x, y))
-            .count();
-        assert_eq!(inked(&c).len(), 6 * per_print);
+        draw_dot_row(&mut c, 2, 6, 10, 20, 1, INK, Some(INK));
+        let lit = inked(&c);
+        let in_place = |i: usize| {
+            let x0 = 10 + i * DOT_STEP;
+            lit.iter()
+                .filter(|&&(x, _)| (x0..x0 + 2 * DOT_R + 1).contains(&x))
+                .count()
+        };
+        let (dot, slot) = (in_place(0), in_place(5));
+        assert_eq!(in_place(1), dot, "two typed dots alike");
+        assert!(slot > 0, "an empty place shows");
+        assert!(
+            dot >= 4 * slot,
+            "a typed dot ({dot}) stands out from a slot ({slot})"
+        );
+        // Nothing outside the row's box.
+        let (w, h) = dot_row_size(6, 1);
+        assert!(
+            lit.iter()
+                .all(|&(x, y)| (10..10 + w).contains(&x) && (20..20 + h).contains(&y))
+        );
     }
 
     #[test]
-    fn each_digit_adds_one_print_and_nothing_moves() {
-        // The trail is anchored once, so typing adds a print at the end and leaves the
-        // earlier ones exactly where they were -- the cat walks, the path does not slide.
+    fn each_digit_adds_one_dot_and_nothing_moves() {
+        // The row is anchored once, so typing fills the next place and leaves the earlier
+        // ones exactly where they were.
         let mut before = Gray320x240::new();
-        draw_paw_trail(&mut before, 3, 40, 90, 3);
+        draw_dot_row(&mut before, 3, 6, 40, 90, 3, INK, None);
         let mut after = Gray320x240::new();
-        draw_paw_trail(&mut after, 4, 40, 90, 3);
+        draw_dot_row(&mut after, 4, 6, 40, 90, 3, INK, None);
         let b = inked(&before);
         let a = inked(&after);
-        assert!(b.iter().all(|p| a.contains(p)), "an earlier print moved");
+        assert!(b.iter().all(|p| a.contains(p)), "an earlier dot moved");
         assert!(a.len() > b.len());
     }
 }

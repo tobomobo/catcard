@@ -1,6 +1,6 @@
 //! Input fields: a card of one or more rows, with a caret in the one being typed into.
 //!
-//! The PIN screen drew one of these by hand -- a white card, paw prints for the digits, a
+//! The PIN screen drew one of these by hand -- a white card, a mark for each digit, a
 //! hairline caret -- and then every other screen that takes typing had its own idea. The
 //! passphrase was a wrapped paragraph, the BIP-85 index was a number with a `<` beside it
 //! and arrow keys to nudge it. Three screens, three answers to "where does what I type
@@ -25,7 +25,7 @@ use crate::widgets::Layout;
 
 /// Black, in both palettes a field is drawn through: index 1 of the art palette and the
 /// bottom of the grey ramp. What sits on a white card.
-const MARK: Level = 1;
+pub(crate) const MARK: Level = 1;
 
 /// Air above and below a row's content, for a board whose body face is this tall.
 ///
@@ -48,7 +48,7 @@ pub enum Show {
     /// The characters themselves, wrapped into at most `lines` rows and scrolled so the
     /// end -- where the typing is -- is always the part on screen.
     Text { lines: usize },
-    /// One paw print per character, room kept for `max` of them.
+    /// One dot per character, room kept for `max` of them.
     ///
     /// The same thing a row of stars said: how many, and nothing about which. Room for
     /// the longest the field can be, so the prints do not slide sideways as they go in.
@@ -180,7 +180,7 @@ pub struct Field<'a> {
     ///
     /// For a row that is showing something *about* what was typed rather than the typing:
     /// the PIN prompt's prefix, once accepted, becomes its two anti-phishing words. The
-    /// row stays the size of six paw prints, so the card does not change shape under the
+    /// row stays the size of six marks, so the card does not change shape under the
     /// owner's hands at the moment they are meant to be reading it.
     pub placeholder: &'a [&'a str],
 }
@@ -245,10 +245,8 @@ impl<'a> Field<'a> {
     }
 }
 
-/// How big the paw prints are on a canvas this tall.
-///
-/// One at the size the 128x64 panel drew them, three on the Q1's 240 rows: the prints are
-/// pixel art, so they go up in whole multiples or they go ragged.
+/// How big the marks are on a canvas this tall: one on the 128x64 panel, three on the
+/// Q1's 240 rows.
 pub fn mark_scale(height: usize) -> usize {
     (height / 64).max(1)
 }
@@ -257,7 +255,7 @@ pub fn mark_scale(height: usize) -> usize {
 fn row_height(l: &Layout<'_>, f: &Field<'_>, scale: usize) -> usize {
     match f.show {
         Show::Text { lines } => lines * l.body.line_height() + 2 * lead(l),
-        Show::Marks { .. } => crate::icons::paw_trail_size(1, scale).1 + 2 * lead(l),
+        Show::Marks { .. } => crate::icons::dot_row_size(1, scale).1 + 2 * lead(l),
     }
 }
 
@@ -269,12 +267,12 @@ fn natural_width(l: &Layout<'_>, f: &Field<'_>, scale: usize) -> Option<usize> {
         width_of(l.body, f.label) + LABEL_GAP
     };
     let content = match f.show {
-        Show::Marks { max } => crate::icons::paw_trail_size(max, scale).0,
+        Show::Marks { max } => crate::icons::dot_row_size(max, scale).0,
         // The widest glyph, so a field of `n` of anything fits in it, with room for the
         // caret after the last.
         Show::Text { .. } => f.max? * l.body.advance(b'W') + 2,
     };
-    // A placeholder has to fit too: the words are longer than six prints in some cases.
+    // A placeholder has to fit too: the words are wider than six marks in some cases.
     let shown = f
         .placeholder
         .iter()
@@ -282,6 +280,26 @@ fn natural_width(l: &Layout<'_>, f: &Field<'_>, scale: usize) -> Option<usize> {
         .max()
         .unwrap_or(0);
     Some(label + content.max(shown))
+}
+
+/// Where the card these rows make sits across `c`: its left edge and its width. For a screen that puts something in line with the card -- a caption over it.
+///
+/// As wide as the widest row needs for the most it can hold, and no wider: a six-digit
+/// field that spans the panel says "type a lot here". A row with no maximum takes the
+/// whole width. Sized by capacity, never by what is in it now, so the card keeps its
+/// shape as it fills -- and as a placeholder replaces the content, which keeps the row's
+/// own size.
+pub fn extent<C: Canvas + ?Sized>(c: &C, l: &Layout<'_>, fields: &[Field<'_>]) -> (usize, usize) {
+    let (width, scale) = (c.width(), mark_scale(c.height()));
+    let pad = 2 * l.margin;
+    let full = width.saturating_sub(2 * pad);
+    let w = fields
+        .iter()
+        .map(|f| natural_width(l, f, scale).map_or(full, |n| n + 2 * pad))
+        .max()
+        .unwrap_or(full)
+        .min(full);
+    (width.saturating_sub(w) / 2, w)
 }
 
 /// Total height of the card these rows make.
@@ -307,19 +325,7 @@ pub fn stack<C: Canvas + ?Sized>(
     }
     let scale = mark_scale(c.height());
     let pad = 2 * l.margin;
-    // As wide as the widest row needs for the most it can hold, and no wider: a six-digit
-    // field that spans the panel says "type a lot here". A row with no maximum takes the
-    // whole width. Sized by capacity, never by what is in it now, so the card keeps its
-    // shape as it fills -- and as a placeholder replaces the content, which keeps the
-    // row's own size.
-    let full = c.width().saturating_sub(2 * pad);
-    let w = fields
-        .iter()
-        .map(|f| natural_width(l, f, scale).map_or(full, |n| n + 2 * pad))
-        .max()
-        .unwrap_or(full)
-        .min(full);
-    let x = c.width().saturating_sub(w) / 2;
+    let (x, w) = extent(c, l, fields);
     let total: usize = fields.iter().map(|f| row_height(l, f, scale)).sum();
 
     // The card, then the content on top of it.
@@ -359,12 +365,46 @@ pub fn stack<C: Canvas + ?Sized>(
         match f.show {
             Show::Text { lines } => row_text(c, l, f, left, right, row_y, h, lines, ink, live),
             Show::Marks { max } => {
-                row_marks(c, f.text, left, right, row_y, h, max, scale, ink, live)
+                // The places still to fill, on paper only: the OLED's card is an outline
+                // on black, where a slot would be the same white as a mark.
+                let slot = (skin == Skin::Paper).then_some(crate::theme::SLOT);
+                row_marks(
+                    c, f.text, left, right, row_y, h, max, scale, ink, slot, live,
+                )
             }
         }
         row_y += h;
     }
     y + total
+}
+
+/// A typing page on a panel with room: what the page is across the top over a rule, the
+/// field's name over the card in the secondary ink, the card with only what was typed in
+/// it, and `hint` under it. Returns the row under the hint.
+///
+/// The OLED's pages keep their own layout: sixty-four rows have no room for a caption.
+#[allow(clippy::too_many_arguments)]
+pub fn page<C: Canvas + ?Sized>(
+    c: &mut C,
+    l: &Layout<'_>,
+    head: &str,
+    label: &str,
+    fields: &[Field<'_>],
+    skin: Skin,
+    caret: bool,
+    hint: &str,
+) -> usize {
+    use crate::widgets::{caption, header};
+    c.clear();
+    let y = header(c, l, head, "");
+    let (x, _) = extent(c, l, fields);
+    let y = if label.is_empty() {
+        y
+    } else {
+        caption(c, l, x, y, label)
+    };
+    let below = stack(c, l, y, fields, skin, caret);
+    crate::widgets::hint(c, l, below + 8, hint)
 }
 
 /// The characters, wrapped, with the end of the text always on screen.
@@ -415,7 +455,14 @@ fn row_text<C: Canvas + ?Sized>(
     // The tail: the last `lines` of them, so what was just typed is always visible.
     let first = starts.len().saturating_sub(lines);
     let shown = &starts[first..];
-    let top = y + h.saturating_sub(shown.len() * l.body.line_height()) / 2;
+    // A one-line row centres its line. A box of several starts at the top, as a page of
+    // writing does: centred, two lines in a five-line box float in its middle and the
+    // box reads as half empty above as well as below.
+    let top = if lines > 1 {
+        y + lead(l)
+    } else {
+        y + h.saturating_sub(shown.len() * l.body.line_height()) / 2
+    };
     let mut end_x = left;
     for (n, &s) in shown.iter().enumerate() {
         let e = shown.get(n + 1).copied().unwrap_or(text.len());
@@ -449,7 +496,7 @@ fn row_text<C: Canvas + ?Sized>(
 /// Placeholder lines, each centred, the block centred in the row.
 ///
 /// In the title face: these are what the owner is meant to *read* -- the anti-phishing
-/// words -- and the row they sit in is sized for paw prints, which is room enough.
+/// words -- and the row they sit in is sized for a row of marks, which is room enough.
 #[allow(clippy::too_many_arguments)]
 fn row_placeholder<C: Canvas + ?Sized>(
     c: &mut C,
@@ -471,7 +518,7 @@ fn row_placeholder<C: Canvas + ?Sized>(
     }
 }
 
-/// One print per character, and the caret where the next one will land.
+/// One dot per character, and the caret where the next one will land.
 #[allow(clippy::too_many_arguments)]
 fn row_marks<C: Canvas + ?Sized>(
     c: &mut C,
@@ -483,20 +530,21 @@ fn row_marks<C: Canvas + ?Sized>(
     max: usize,
     scale: usize,
     ink: Level,
+    slot: Option<Level>,
     caret: bool,
 ) {
-    let (trail_w, trail_h) = crate::icons::paw_trail_size(max, scale);
-    let step = crate::icons::paw_trail_size(2, scale)
-        .0
-        .saturating_sub(crate::icons::paw_trail_size(1, scale).0);
-    // Centred in whatever the label left, so a labelled row of marks still reads as one.
+    let (row_w, row_h) = crate::icons::dot_row_size(max, scale);
+    let step = crate::icons::dot_row_size(2, scale).0 - crate::icons::dot_row_size(1, scale).0;
     let span = right.saturating_sub(left);
-    let x = left + span.saturating_sub(trail_w) / 2;
-    let top = y + h.saturating_sub(trail_h) / 2;
+    // Centred in whatever the label left, so a labelled row of marks still reads as one.
+    let x = left + span.saturating_sub(row_w) / 2;
+    let top = y + h.saturating_sub(row_h) / 2;
     let n = text.chars().count().min(max);
-    crate::icons::draw_paw_trail_in(c, n, x, top, scale, ink);
+    // Every place not yet typed gets a small dot where its own will land, so the row says
+    // how many it holds and how many are left before anything is typed.
+    crate::icons::draw_dot_row(c, n, max, x, top, scale, ink, slot);
     if caret && n < max {
-        c.fill_rect(x + n * step, top, CARET_W, trail_h, ink);
+        c.fill_rect(x + n * step, top, CARET_W, row_h, ink);
     }
 }
 

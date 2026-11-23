@@ -2,9 +2,9 @@
 //!
 //! Fixtures are built here rather than checked in, so a case is a few lines of "an
 //! image like this, encoded like that" instead of an opaque blob: every colour type,
-//! every bit depth, every filter, and the awkward sizes where a resize rounds. The one
-//! checked-in file is the paw print the Q1 already draws, which is a real encoder's
-//! output rather than ours.
+//! every bit depth, every filter, and the awkward sizes where a resize rounds. The
+//! checked-in files are real encoders' output rather than ours: the cat the firmware
+//! draws, and in `testdata/` a paw print the Q1 used to draw, kept for its colour type.
 
 extern crate alloc;
 extern crate std;
@@ -697,10 +697,10 @@ fn a_card_that_goes_away_is_the_cards_fault_and_a_screen_that_refuses_is_the_scr
 
 #[test]
 fn a_real_file_from_a_real_encoder_decodes() {
-    // The paw print the Q1 draws at login: 27x30, written by an image tool rather than
-    // by the fixture builder above, so it exercises whatever that tool chose to do --
-    // its filters, its palette or lack of one, its chunk order.
-    let file = include_bytes!("../../catcard-ui/src/art/paw-right-27x30.png");
+    // A paw print the Q1 once drew at login: 27x30, 8-bit grey with alpha, written by an
+    // image tool rather than by the fixture builder above, so it exercises whatever that
+    // tool chose to do -- its filters, its palette or lack of one, its chunk order.
+    let file = include_bytes!("testdata/gray-alpha-27x30.png");
     let hdr = header(&file[..HEADER_BYTES]).expect("a header");
     assert_eq!((hdr.width, hdr.height), (27, 30));
 

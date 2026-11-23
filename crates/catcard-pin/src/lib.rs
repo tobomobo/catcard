@@ -283,6 +283,16 @@ impl Login {
         self.words
     }
 
+    /// How many digits the prefix in hand has: for a screen that goes on showing the
+    /// prefix as entered while the suffix is typed. A count, never the digits.
+    ///
+    /// Entered is all it is. [`Login::prefix_entered`] checks nothing -- any prefix gets
+    /// words, a mistyped one other words -- and only [`Login::attempt`] says whether the
+    /// PIN was right.
+    pub fn prefix_len(&self) -> usize {
+        self.prefix_len as usize
+    }
+
     /// Attempts remaining before the device bricks itself, as the bootloader last
     /// reported it.
     pub fn attempts_left(&self) -> u32 {

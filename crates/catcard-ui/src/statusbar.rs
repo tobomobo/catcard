@@ -4,8 +4,11 @@
 //!
 //! - **Which modifiers are down.** The Q1 has a real keyboard, and a passphrase typed
 //!   with SHIFT held is a different passphrase -- one that opens a different, empty
-//!   wallet with no error to say so. The indicators are dim when the modifier is up and
-//!   full ink while it is held, so a person can see what they are about to type.
+//!   wallet with no error to say so. A modifier that is down shows as a white chip with
+//!   its name knocked out of it, in a place of its own that never moves; one that is up
+//!   is not drawn at all. Three dim words on every screen, typing or not, were read as
+//!   decoration and then not read -- the chip is the only thing in the bar that appears
+//!   and disappears, so it is seen.
 //! - **Whether a passphrase is in force**, which decides which wallet everything else on
 //!   the screen belongs to.
 //! - **Which wallet that is**, as the master fingerprint -- the same four bytes a
@@ -22,11 +25,7 @@ use crate::canvas::{Canvas, INK, Level, PAPER};
 use crate::face::Face;
 use crate::text::{draw_text_in, width_of};
 
-/// Ink for a modifier that is not held, or a state that is off.
-///
-/// Present but plainly inactive. Stock greys them the same way, and the alternative --
-/// hiding them until they matter -- makes the bar's width jump around and gives a person
-/// nothing to learn the layout from.
+/// Ink for a state that is off: the wallet word while it is the root, and the rule.
 pub const DIM: Level = 6;
 
 /// Where the device's power is coming from.
@@ -103,6 +102,10 @@ pub struct Status {
 const GAP: usize = 6;
 /// Space before the key word, which is a separate group.
 const GROUP_GAP: usize = 14;
+/// The longest word [`Status::key`] holds, which the modifiers' places are laid out past.
+const WIDEST_KEY: &str = "PASSPHRASE";
+/// Room either side of a modifier's name inside its chip.
+const CHIP_PAD: usize = 3;
 /// Space either side of the bar's contents.
 const MARGIN: usize = 4;
 /// Width the power icon is given, including the space before it.
@@ -130,22 +133,24 @@ pub fn render<C: Canvas + ?Sized, F: Face + ?Sized>(canvas: &mut C, font: &F, st
     let level = |on: bool| if on { INK } else { DIM };
     let y = 1;
 
-    let mut x = MARGIN;
+    // The wallet word first, at the margin.
+    let _ = draw_text_in(canvas, font, MARGIN, y, status.key, level(status.key_set));
+
+    // Then a fixed place for each modifier, past the widest wallet word, so a chip
+    // appearing moves nothing else.
+    let mut x = MARGIN + width_of(font, WIDEST_KEY) + GROUP_GAP;
     for (text, on) in [
         ("SHIFT", status.shift),
         ("SYM", status.symbol),
         ("CAPS", status.caps),
     ] {
-        x = draw_text_in(canvas, font, x, y, text, level(on)) + GAP;
+        let w = width_of(font, text);
+        if on {
+            canvas.fill_rect(x, 0, w + 2 * CHIP_PAD, h - 1, INK);
+            let _ = draw_text_in(canvas, font, x + CHIP_PAD, y, text, PAPER);
+        }
+        x += w + 2 * CHIP_PAD + GAP;
     }
-    let _ = draw_text_in(
-        canvas,
-        font,
-        x + GROUP_GAP - GAP,
-        y,
-        status.key,
-        level(status.key_set),
-    );
 
     // The right-hand group, laid out from the edge inwards so it stays put as the left
     // side changes width.

@@ -527,7 +527,7 @@ pub fn draw_with_marks(
 ) {
     use catcard_ui::art::rgba;
     reset_origin(panel);
-    let palette = &catcard_ui::st7789::SLATE;
+    let palette = &catcard_ui::theme::LIST;
 
     // Exactly what this frame's marks need, and nothing for a list with none: every
     // document screen comes through here.
@@ -1191,6 +1191,8 @@ pub const FONTS: catcard_ui::scroll::Fonts<'static> = catcard_ui::scroll::Fonts 
     // Three columns of a 128-wide row, which is as much as this panel can give up, and
     // on two colours a wider bar is a wall. The track is dotted -- see `scroll`.
     scrollbar: 3,
+    // Sixty-four rows have none to spare for a line under every title.
+    title_rule: false,
 };
 /// As above, for the Q1's colour panel: a 10x20 title and body over a 7x14 small face.
 #[cfg(feature = "board-q1")]
@@ -1206,6 +1208,9 @@ pub const FONTS: catcard_ui::scroll::Fonts<'static> = catcard_ui::scroll::Fonts 
     // Visible from across a desk and it costs a list nothing: six of 320 columns, in
     // the gutter the scroll arrows used to sit in.
     scrollbar: 6,
+    // A page title is set apart by a rule as well as by its face: on this panel the
+    // title and body faces are the same size, so position alone was all it had.
+    title_rule: true,
 };
 
 /// Panel height in pixels, for sizing a pager window against a layout at runtime (the
@@ -1253,10 +1258,10 @@ impl Strip {
     }
 }
 
-/// The strip's label on an ordinary frame: a mid grey of [`SLATE`](catcard_ui::st7789::SLATE),
-/// there to be found rather than read past.
+/// The strip's label on an ordinary frame: the secondary ink, there to be found rather
+/// than read past -- and the same grey on a list, a typing page and the icon grid.
 #[cfg(feature = "board-q1")]
-pub const STRIP_INK: catcard_ui::canvas::Level = 9;
+pub const STRIP_INK: catcard_ui::canvas::Level = catcard_ui::theme::SECONDARY;
 
 /// Draw a frame's content above the help strip, and the strip under it: the one place the
 /// strip is put on a screen. `f` is handed the band above, whatever `strip` is -- with no
@@ -1384,13 +1389,13 @@ static DRAWING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool:
 /// one. A flush that fails is not worth stopping for -- the device is still reachable over
 /// USB, and the next draw tries again.
 ///
-/// Every ordinary screen paints in [`SLATE`](catcard_ui::st7789::SLATE): white on the
+/// Every ordinary screen paints in [`LIST`](catcard_ui::theme::LIST): white on the
 /// `#303030` the icons are drawn on, so a list of rows and a grid of pictures are the
-/// same surface. The splash and About screens are the exception -- they draw through the
+/// same surface, with the text roles of [`catcard_ui::theme`] in it. The splash and About screens are the exception -- they draw through the
 /// artwork's own palette, which has that same background at index 0 and its own colours
 /// above it.
 pub fn draw(panel: &mut Panel, f: impl FnOnce(&mut Surface<'_>)) {
-    draw_with(panel, &catcard_ui::st7789::SLATE, f)
+    draw_with(panel, &catcard_ui::theme::LIST, f)
 }
 
 /// [`draw`], with the content drawn through a palette of the screen's choosing.
@@ -1488,12 +1493,13 @@ pub const FIELD_TOP: usize = 42;
 pub const FIELD_TOP: usize = 12;
 
 /// Draw a screen that takes typing: the menu's grey page, so every one of them looks
-/// like the same device, and white text over it.
+/// like the same device, and white text over it -- through [`PAGE`](catcard_ui::theme::PAGE),
+/// the icons' colours plus the text roles, so a page can carry art and a grey caption.
 ///
 /// On the OLED there is one palette and this is [`draw`].
 pub fn draw_field_page(panel: &mut Panel, f: impl FnOnce(&mut Surface<'_>)) {
     #[cfg(feature = "board-q1")]
-    draw_with(panel, &catcard_ui::art::menuicons::PALETTE, f);
+    draw_with(panel, &catcard_ui::theme::PAGE, f);
     #[cfg(not(feature = "board-q1"))]
     draw(panel, f);
 }

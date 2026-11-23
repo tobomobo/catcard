@@ -1853,7 +1853,7 @@ fn a_consolidation_with_an_ordinary_fee_passes_the_default_cap() {
         &mut buf,
     );
     let s = summary_of(&buf[..n]).unwrap();
-    assert_eq!((s.sending, s.change), (0, 99_000));
+    assert_eq!((s.sending, s.change, s.change_outputs), (0, 99_000, 1));
     assert_eq!((s.fee, s.fee_percent, s.fee_warn), (1_000, 1, false));
 }
 

@@ -165,12 +165,14 @@ fn ask_amount(ui: &mut Ui<'_>) -> Option<u64> {
 /// or `bitcoin:` and a base58 address -- and is what a wallet expects to scan. With an
 /// amount or a label the payload is a URI in byte mode either way, so the address goes
 /// in as it is written and the text beside the symbol is still the address alone.
-pub(crate) fn share_qr(ui: &mut Ui<'_>, address: &str, bech32: bool) {
+///
+/// `caption` is which address this is, its path, for the top of the screen.
+pub(crate) fn share_qr(ui: &mut Ui<'_>, address: &str, bech32: bool, caption: &str) {
     match ask_extras(ui) {
         None => {}
-        Some(None) => menu::address_qr_of(ui, address, bech32),
+        Some(None) => menu::address_qr_of(ui, address, bech32, caption),
         Some(Some(extras)) => match extras.uri(address) {
-            Some(uri) => menu::qr_screen(ui, uri.as_str(), address),
+            Some(uri) => menu::qr_screen_captioned(ui, uri.as_bytes(), address, caption),
             None => {
                 menu::message(ui.panel, "QR", "too long to encode", "");
                 menu::wait_for_any_key(ui);

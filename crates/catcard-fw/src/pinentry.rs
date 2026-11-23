@@ -220,7 +220,7 @@ fn tries_left<C: Canvas + ?Sized>(c: &mut C, left: u32) {
     }
 }
 
-/// The PIN prompt on the Q1: one field in two halves, the words appearing in the first.
+/// The PIN prompt on the Q1: the prefix, then the words and the suffix on one page.
 ///
 /// # Why one screen instead of three
 ///
@@ -229,17 +229,13 @@ fn tries_left<C: Canvas + ?Sized>(c: &mut C, left: u32) {
 /// one PIN, and the words -- the thing the owner is meant to *check* -- were on a screen
 /// that had gone by the time the half that matters was typed.
 ///
-/// Here the top half holds the prefix, and the moment it is accepted the words take its
-/// place with the caret in the bottom half. One press, and the words stay in front of
-/// the owner for as long as they are typing the half that would be given away if the
-/// device were not theirs.
+/// Here the prefix and the suffix are two cards side by side, and the moment the prefix
+/// is sent the words appear under them while the suffix is typed. One press, and the
+/// words stay in front of the owner for as long as they are typing the half that would
+/// be given away if the device were not theirs. The prefix card keeps its prints, greyed:
+/// sent, not checked -- any prefix gets words, and only the whole PIN is checked.
 ///
-/// # It is the same card every other typing screen draws
-///
-/// Two rows of [`catcard_ui::field`], sharing an edge: marks for the digits, text for
-/// the words. This screen used to lay out its own boxes, its own prints and its own
-/// caret, and then the passphrase and the BIP-85 index each invented something else. The
-/// geometry lives in the widget now, and what is left here is which rows there are.
+/// The page itself is [`catcard_ui::pinpage`], which the screen renderer draws too.
 ///
 /// `caret` is the blink, which belongs to the loop that polls the keypad -- see
 /// [`unlock`].
@@ -255,85 +251,27 @@ fn screen_pin(
     left: u32,
     layout: &KeyLayout,
 ) {
-    use catcard_ui::canvas::Canvas as _;
-    use catcard_ui::field::{self, Field};
-
-    /// What the row just accepted says while the secure element is working on it.
-    const CHECKING: &[&str] = &["Checking", "please wait"];
-
-    /// Stand-ins for the digits: the widget draws one print per character and never
-    /// looks at them, so the marks row is handed a count and not a PIN.
-    const DOTS: &str = "......";
-
-    let body = display::LAYOUT.body;
-    let filled = words.is_some();
-
-    // Both rows are six-print rows the whole time. Once the prefix is accepted the top
-    // one shows the two words, one per line, as its placeholder -- keeping its size, so
-    // the card does not jump at the moment the owner is meant to be reading it.
-    let said: [&str; 2] = words.unwrap_or(["", ""]);
-    let top = Field::marks(&DOTS[..prefix.min(MAX_PART_LEN)], MAX_PART_LEN).live(!filled);
-    let top = match (filled, busy) {
-        (true, _) => top.placeholder(&said),
-        // The prefix was just accepted and its words are being fetched: this row says
-        // so, in place, rather than the whole screen going away for a second.
-        (false, true) => top.placeholder(CHECKING).live(false),
-        (false, false) => top,
+    let (mut keys, mut types) = ([0u8; 19], [0u8; 19]);
+    let legend = (!layout.is_plain()).then(|| {
+        let n = layout.legend(true, &mut keys, &mut types);
+        (
+            core::str::from_utf8(&keys[..n]).unwrap_or(""),
+            core::str::from_utf8(&types[..n]).unwrap_or(""),
+        )
+    });
+    let page = catcard_ui::pinpage::PinPage {
+        typed: if words.is_some() { suffix } else { prefix },
+        first: prefix,
+        max: MAX_PART_LEN,
+        min: MIN_PART_LEN,
+        words,
+        busy,
+        caret,
+        tries: (left < MAX_ATTEMPTS).then_some((left, MAX_ATTEMPTS)),
+        legend,
     };
-    let bottom = Field::marks(&DOTS[..suffix.min(MAX_PART_LEN)], MAX_PART_LEN).live(filled);
-    let fields = [top, bottom];
-
     display::draw_field_page(panel, |c| {
-        c.clear();
-        let below = field::stack(
-            c,
-            &display::LAYOUT,
-            display::FIELD_TOP,
-            &fields,
-            display::FIELD_SKIN,
-            caret,
-        );
-
-        // What the two halves are, and what the keys do, in the space around them.
-        let head = if filled {
-            "these words must be yours"
-        } else {
-            "PIN prefix"
-        };
-        let hx = centred(body, head, c.width());
-        draw_text(
-            c,
-            body,
-            hx,
-            display::FIELD_TOP.saturating_sub(body.line_height() + 6),
-            head,
-        );
-
-        let typed = if filled { suffix } else { prefix };
-        let foot = if busy {
-            ""
-        } else if typed < MIN_PART_LEN {
-            "2 to 6 digits"
-        } else if filled {
-            "accept to log in"
-        } else {
-            "accept for the words"
-        };
-        let fx = centred(body, foot, c.width());
-        draw_text(c, body, fx, below + 6, foot);
-        if !busy && !layout.is_plain() {
-            // Under the hint, in the same face: the number row's labels, and what each
-            // key types this time.
-            let (mut keys, mut types) = ([0u8; 19], [0u8; 19]);
-            let n = layout.legend(true, &mut keys, &mut types);
-            let keys = core::str::from_utf8(&keys[..n]).unwrap_or("");
-            let types = core::str::from_utf8(&types[..n]).unwrap_or("");
-            let lx = centred(body, keys, c.width());
-            let ly = below + 6 + body.line_height() + 8;
-            draw_text(c, body, lx, ly, keys);
-            draw_text(c, body, lx, ly + body.line_height() + 2, types);
-        }
-        tries_left(c, left);
+        catcard_ui::pinpage::draw(c, &display::LAYOUT, &page);
     });
 }
 
@@ -438,20 +376,23 @@ fn screen_field(
     display::draw(panel, |c| {
         c.clear();
         title(c, 2, heading);
-        // A paw print per digit instead of a `*`. The trail is placed for the longest part
-        // a PIN can have and filled from its left, so each digit adds a print ahead of the
-        // last and nothing already drawn moves: a cat walking in, not a row that re-centres
-        // itself on every key. One print per digit, so it gives away exactly what the stars
-        // did -- how many -- and nothing about which.
-        use catcard_ui::icons::{draw_paw_trail, paw_trail_size};
+        // A dot per digit instead of a `*`, and a small dot for each place still to fill.
+        // The row is placed for the longest part a PIN can have and filled from its left,
+        // so each digit fills the next place and nothing already drawn moves -- not a
+        // row that re-centres itself on every key. One dot per digit, so it gives away
+        // exactly what the stars did -- how many -- and nothing about which.
+        use catcard_ui::icons::{dot_row_size, draw_dot_row};
         let scale = (c.height() / DESIGN_ROWS).max(1);
-        let (trail_w, _) = paw_trail_size(MAX_PART_LEN, scale);
-        let x = c.width().saturating_sub(trail_w) / 2;
-        // A scrambled row needs its legend under the prints, so everything below moves
-        // down a little to make room.
+        let (row_w, row_h) = dot_row_size(MAX_PART_LEN, scale);
+        let x = c.width().saturating_sub(row_w) / 2;
+        // A scrambled row needs its legend under the dots, so everything below moves
+        // down a little to make room. The rows are where the middle of the old, taller
+        // trail was.
         let scrambled = !layout.is_plain();
-        let (trail_y, hint_y) = if scrambled { (18, 50) } else { (22, 46) };
-        draw_paw_trail(c, buf.len(), x, at(c, trail_y), scale);
+        let (mid_y, hint_y) = if scrambled { (26, 50) } else { (30, 46) };
+        let y = at(c, mid_y).saturating_sub(row_h / 2);
+        let ink = catcard_ui::canvas::INK;
+        draw_dot_row(c, buf.len(), MAX_PART_LEN, x, y, scale, ink, Some(ink));
         legend(c, 36, layout);
         if buf.len() < MIN_PART_LEN {
             small(c, hint_y, "2 to 6 digits");
@@ -1071,7 +1012,7 @@ pub fn unlock(
                 #[cfg(feature = "board-q1")]
                 Step::ConfirmWords(w) => screen_pin(
                     panel,
-                    0,
+                    login.prefix_len(),
                     Some(anti_phishing_words(w)),
                     0,
                     caret,
@@ -1082,7 +1023,7 @@ pub fn unlock(
                 #[cfg(feature = "board-q1")]
                 Step::Suffix => screen_pin(
                     panel,
-                    0,
+                    login.prefix_len(),
                     login.words().map(anti_phishing_words),
                     field.len(),
                     caret,
@@ -1251,7 +1192,8 @@ pub fn unlock(
                         #[cfg(feature = "board-q1")]
                         checking(panel, &login, field.len());
                         #[cfg(not(feature = "board-q1"))]
-                        let _busy = working(panel, "Checking");
+                        // Not "checking": nothing is checked until the whole PIN is in.
+                        let _busy = working(panel, "Getting words");
                         let _ = login.prefix_entered(&g, field.as_bytes());
                         log_state(&login, "prefix");
                         field.clear();

@@ -62,6 +62,13 @@ pub struct Fonts<'a> {
     /// afford a bar that is visible at arm's length; the OLED cannot spare more than a
     /// few columns of a 128-pixel row, and on two colours a wide bar is a wall.
     pub scrollbar: usize,
+    /// Whether a page title -- a centred line in the title face -- gets a rule under it,
+    /// in [`RULE`](crate::theme::RULE), and the air around one.
+    ///
+    /// A panel's choice like the scrollbar. On the Q1 the title and body faces are the
+    /// same size, so without it a title differs from the first row under it only by being
+    /// centred. Sixty-four rows have no room for one.
+    pub title_rule: bool,
 }
 
 impl<'a> Fonts<'a> {
@@ -169,6 +176,24 @@ pub struct Line<'a> {
     /// `None` for an ordinary row. The row stays selectable; what Confirm does to it is
     /// the caller's -- a toggle list flips it and redraws.
     pub toggle: Option<bool>,
+    /// Drawn in [`SECONDARY`](crate::theme::SECONDARY) rather than full ink: a label over
+    /// a value, a note under a title. Quieter than the content, so a page reads as what
+    /// it is about first and what the parts are called second.
+    pub muted: bool,
+    /// Something stored, shown to be read: indented behind a bar, so it cannot be taken
+    /// for a row that does something. Panels with colour only; see [`Line::value`].
+    pub value: bool,
+    /// A row that does something, with a chevron at its right edge. See [`Line::action`].
+    pub action: bool,
+    /// Not text at all: a rule across the page between two parts of it -- what is stored
+    /// above, what can be done with it below. See [`Line::divider`].
+    pub divider: bool,
+    /// A value at the right end of the row, the line's own text its label. See
+    /// [`Line::aside`].
+    pub aside: Option<&'a str>,
+    /// Drawn in [`ACCENT`](crate::theme::ACCENT): a warning about the line above it. See
+    /// [`Line::warn`].
+    pub warn: bool,
 }
 
 impl<'a> Line<'a> {
@@ -184,6 +209,12 @@ impl<'a> Line<'a> {
             icon: None,
             mark: None,
             toggle: None,
+            muted: false,
+            value: false,
+            action: false,
+            divider: false,
+            aside: None,
+            warn: false,
         }
     }
 
@@ -199,6 +230,12 @@ impl<'a> Line<'a> {
             icon: None,
             mark: None,
             toggle: None,
+            muted: false,
+            value: false,
+            action: false,
+            divider: false,
+            aside: None,
+            warn: false,
         }
     }
 
@@ -214,6 +251,12 @@ impl<'a> Line<'a> {
             icon: None,
             mark: None,
             toggle: None,
+            muted: false,
+            value: false,
+            action: false,
+            divider: false,
+            aside: None,
+            warn: false,
         }
     }
 
@@ -264,6 +307,57 @@ impl<'a> Line<'a> {
         self.toggle = Some(on);
         self
     }
+
+    /// Put `value` at the right end of this row, with the line's own text as its label:
+    /// `Fee            0.0002 BTC`. In a document the label is drawn in the secondary ink
+    /// and the value in the row's own, so a column of rows reads as names down the left
+    /// and what they are down the right; on a menu row it is the other way round -- the
+    /// row is what is chosen, and its setting the quiet part. A row too narrow for both
+    /// puts the value, whole, on a row of its own under the label.
+    pub const fn aside(mut self, value: &'a str) -> Self {
+        self.aside = Some(value);
+        self
+    }
+
+    /// Draw this line in the secondary ink: a label or a note, not content.
+    pub const fn muted(mut self) -> Self {
+        self.muted = true;
+        self
+    }
+
+    /// Draw this line in the accent ink: something about the line above that must not be
+    /// read past, such as change paid somewhere no wallet would put it. Wins over
+    /// [`Line::muted`]. On the one-bit panel the accent is lit like any ink.
+    pub const fn warn(mut self) -> Self {
+        self.warn = true;
+        self
+    }
+
+    /// A stored value: indented behind a bar in the rule's ink, wrapped lines and all.
+    ///
+    /// On a page that holds both data and the things that can be done with it -- a saved
+    /// password and its menu -- a value and a menu row would otherwise be the same face in
+    /// the same white at the same margin. On the one-bit panel, which has no room for an
+    /// indent, this changes nothing.
+    pub const fn value(mut self) -> Self {
+        self.value = true;
+        self
+    }
+
+    /// A row that does something: a chevron at its right edge, inside the gutter. On the
+    /// one-bit panel, where the inverted bar already says it, this changes nothing.
+    pub const fn action(mut self) -> Self {
+        self.action = true;
+        self
+    }
+
+    /// A rule across the page, for between what a page shows and what can be done with
+    /// it. Takes no room on the one-bit panel.
+    pub const fn divider() -> Self {
+        let mut l = Self::body("");
+        l.divider = true;
+        l
+    }
 }
 
 /// A line after wrapping: exactly what one row on screen draws.
@@ -277,7 +371,16 @@ pub struct VisualLine<'a> {
     pub icon: Option<&'a Bitmap>,
     pub mark: Option<Mark<'a>>,
     pub toggle: Option<bool>,
+    pub muted: bool,
+    pub value: bool,
+    pub action: bool,
+    pub divider: bool,
+    pub aside: Option<&'a str>,
+    pub warn: bool,
 }
+
+/// Spaces kept, at least, between a label and the value beside it.
+const ASIDE_GAP: usize = 2;
 
 /// Most visual lines a document holds after wrapping. Enough for a 24-word seed with a
 /// title, or any of the menus; long unbounded content (the log) stays on [`crate::pager`].
@@ -352,9 +455,37 @@ pub fn wrap<'a>(lines: &[Line<'a>], width: usize, fonts: &Fonts<'_>) -> Lines<'a
 /// [`wrap`], appending to `out`. False if `out` ran out of room, so some of the document --
 /// a whole line, or the end of one -- is not in it.
 fn wrap_into<'a>(lines: &[Line<'a>], width: usize, fonts: &Fonts<'_>, out: &mut Lines<'a>) -> bool {
-    let avail = text_width(width, fonts);
+    let full = text_width(width, fonts);
     for line in lines {
         let face = fonts.face(line.size);
+        let avail = full.saturating_sub(indent(line.value, fonts));
+        if let Some(value) = line.aside {
+            // Label and value on one row where both fit with room between them; where
+            // they do not, the value goes whole on the row under its label. Clipping it
+            // to make the row work would cut an amount short.
+            let room = width_of(face, line.text) + ASIDE_GAP * face.advance(b' ');
+            if room + width_of(face, value) > avail {
+                // Each keeps the ink it would have had beside the other.
+                let menu = line.menu_item.is_some();
+                let label = Line {
+                    aside: None,
+                    muted: line.muted || !menu,
+                    ..*line
+                };
+                let value = Line {
+                    text: value,
+                    aside: None,
+                    menu_item: None,
+                    wrap: true,
+                    muted: line.muted || menu,
+                    ..*line
+                };
+                if !wrap_into(&[label, value], width, fonts, out) {
+                    return false;
+                }
+                continue;
+            }
+        }
         if !line.wrap || avail == 0 || width_of(face, line.text) <= avail {
             let pushed = out.push(VisualLine {
                 text: line.text,
@@ -365,6 +496,12 @@ fn wrap_into<'a>(lines: &[Line<'a>], width: usize, fonts: &Fonts<'_>, out: &mut 
                 icon: line.icon,
                 mark: line.mark,
                 toggle: line.toggle,
+                muted: line.muted,
+                value: line.value,
+                action: line.action,
+                divider: line.divider,
+                aside: line.aside,
+                warn: line.warn,
             });
             if pushed.is_err() {
                 return false;
@@ -387,6 +524,12 @@ fn wrap_into<'a>(lines: &[Line<'a>], width: usize, fonts: &Fonts<'_>, out: &mut 
                 icon: if first { line.icon } else { None },
                 mark: if first { line.mark } else { None },
                 toggle: if first { line.toggle } else { None },
+                muted: line.muted,
+                value: line.value,
+                action: first && line.action,
+                divider: false,
+                aside: None,
+                warn: line.warn,
             });
             if pushed.is_err() {
                 return false;
@@ -490,9 +633,18 @@ impl<'a> ScrollView<'a> {
         self.wrap_cursor = wrap;
     }
 
-    /// The height of line `i`'s slot: its face plus the inter-line gap.
+    /// The height of line `i`'s slot: its face plus the inter-line gap, and the rule's
+    /// room under a page title.
     fn slot(&self, i: usize) -> usize {
-        self.fonts.face(self.lines[i].size).line_height() + self.fonts.gap
+        if self.lines[i].divider {
+            return if self.fonts.colour { DIVIDER_ROOM } else { 0 };
+        }
+        let rule = if self.fonts.title_rule && is_heading(&self.lines[i]) {
+            TITLE_RULE_ROOM
+        } else {
+            0
+        };
+        self.fonts.face(self.lines[i].size).line_height() + self.fonts.gap + rule
     }
 
     /// Document pixels above line `i`.
@@ -546,6 +698,22 @@ impl<'a> ScrollView<'a> {
         self.off = off.min(self.max_off());
     }
 
+    /// Whether line `i` is drawn at the current scroll: always in a document, which
+    /// scrolls by the pixel and slides its lines in and out at the edges; in a menu only
+    /// when the whole of its text is in the window.
+    ///
+    /// Half a menu row is not a row. Cut off at the foot of the window -- over the help
+    /// strip, under the last whole row -- it read as a row of its own whose name had been
+    /// garbled, or as part of the strip. The scrollbar already says there is more.
+    fn shows(&self, i: usize) -> bool {
+        if !self.is_menu() {
+            return true;
+        }
+        let lh = self.fonts.face(self.lines[i].size).line_height();
+        let top = self.top(i) as isize - self.off as isize;
+        top >= 0 && top as usize + lh <= self.height
+    }
+
     /// Whether this document has any selectable line (i.e. is a menu).
     pub fn is_menu(&self) -> bool {
         self.cursor.is_some()
@@ -596,8 +764,8 @@ impl<'a> ScrollView<'a> {
         let h = self.height as isize;
         let colour = self.fonts.colour;
         self.lines.iter().enumerate().filter_map(move |(i, vl)| {
-            let (Some(Mark::Art { colour: art, .. }), Align::Left, true) =
-                (vl.mark, vl.align, colour)
+            let (Some(Mark::Art { colour: art, .. }), Align::Left, true, true) =
+                (vl.mark, vl.align, colour, self.shows(i))
             else {
                 return None;
             };
@@ -822,6 +990,41 @@ fn fill_band<C: Canvas + ?Sized>(canvas: &mut C, top: isize, lh: usize, height: 
     }
 }
 
+/// Whether a line is a page title: centred, in the title face, not something to select.
+/// A large left-aligned row (a chain in the chain list) is content, not a heading.
+fn is_heading(vl: &VisualLine<'_>) -> bool {
+    vl.size == Size::Title && vl.align == Align::Center && vl.menu_item.is_none()
+}
+
+/// Pixels a page title's rule adds under it: air, the one-pixel rule, and more air.
+pub(crate) const TITLE_RULE_ROOM: usize = 8;
+/// Where the rule sits below the bottom of the title's face.
+pub(crate) const TITLE_RULE_DROP: usize = 3;
+
+/// Rows a divider takes on a panel with colour: air, the rule, air.
+const DIVIDER_ROOM: usize = 12;
+/// How far a value is indented on a panel with colour, and the bar in that room.
+const VALUE_INDENT: usize = 10;
+const VALUE_BAR: usize = 3;
+
+/// How far a line's text starts right of the margin for being a value.
+fn indent(value: bool, fonts: &Fonts<'_>) -> usize {
+    if value && fonts.colour {
+        VALUE_INDENT
+    } else {
+        0
+    }
+}
+
+/// A chevron pointing right, `side` tall, two pixels thick, its tip at `x + side / 2`.
+fn draw_chevron<C: Canvas + ?Sized>(c: &mut C, x: usize, y: usize, side: usize, ink: Level) {
+    let half = side / 2;
+    for k in 0..=half {
+        c.fill_rect(x + k, y + k, 2, 1, ink);
+        c.fill_rect(x + k, y + side - k, 2, 1, ink);
+    }
+}
+
 /// Draw the whole view onto `canvas`.
 pub fn render<C: Canvas + ?Sized>(canvas: &mut C, view: &ScrollView<'_>) {
     canvas.clear();
@@ -841,15 +1044,46 @@ pub fn render<C: Canvas + ?Sized>(canvas: &mut C, view: &ScrollView<'_>) {
             continue; // fully above the top
         }
 
+        if !view.shows(i) {
+            continue;
+        }
+        if vl.divider {
+            if fonts.colour {
+                let y = top + (DIVIDER_ROOM / 2) as isize;
+                if y >= 0 && (y as usize) < h {
+                    let len = arrow_x.saturating_sub(fonts.margin);
+                    canvas.fill_rect(fonts.margin, y as usize, len, 1, crate::theme::RULE);
+                }
+            }
+            continue;
+        }
+
         let selected = view.cursor == Some(i);
-        let ink = if selected { PAPER } else { INK };
+        let ink = match (selected, vl.warn, vl.muted) {
+            (true, _, _) => PAPER,
+            (false, true, _) => crate::theme::ACCENT,
+            (false, false, true) => crate::theme::SECONDARY,
+            (false, false, false) => INK,
+        };
         if selected {
             // The selected row is an inverted bar with everything knocked out of it.
             fill_band(canvas, top, lh, h);
         }
 
         // The icon sits at the left margin and stays put while the text marquees.
-        let mut tx = fonts.margin;
+        let mut tx = fonts.margin + indent(vl.value, fonts);
+        if vl.value && fonts.colour {
+            // Through the gap to the next line when that is part of the value too, so a
+            // wrapped value has one bar down its side.
+            let next_value = view.lines.get(i + 1).is_some_and(|n| n.value);
+            let bar_h = lh + if next_value { fonts.gap } else { 0 };
+            for r in 0..bar_h {
+                let y = top + r as isize;
+                if y >= 0 && (y as usize) < h {
+                    canvas.fill_rect(fonts.margin, y as usize, VALUE_BAR, 1, crate::theme::RULE);
+                }
+            }
+        }
         if let (Some(bmp), Align::Left) = (vl.icon, vl.align) {
             let scale = (lh / 7).max(1);
             draw_icon(canvas, bmp, fonts.margin, top, scale, ink, h);
@@ -882,6 +1116,23 @@ pub fn render<C: Canvas + ?Sized>(canvas: &mut C, view: &ScrollView<'_>) {
             }
             text_right = bx.saturating_sub(fonts.margin + 1);
         }
+        // A row that does something: a chevron where a toggle's box would be.
+        if vl.action && fonts.colour && vl.align == Align::Left {
+            let side = (lh / 2) & !1;
+            let cx = arrow_x.saturating_sub(side / 2 + 3);
+            let cy = top + (lh as isize - side as isize) / 2;
+            if cy >= 0 && cy as usize + side < h {
+                // Quiet until its row is chosen: a column of white chevrons would
+                // outshout the names beside them.
+                let mark = if selected {
+                    ink
+                } else {
+                    crate::theme::SECONDARY
+                };
+                draw_chevron(canvas, cx, cy as usize, side, mark);
+            }
+            text_right = text_right.min(cx.saturating_sub(fonts.margin));
+        }
 
         match vl.align {
             Align::Left => {
@@ -889,7 +1140,38 @@ pub fn render<C: Canvas + ?Sized>(canvas: &mut C, view: &ScrollView<'_>) {
                 // stay put and the text is clipped to the room right of the icon.
                 let shift = if selected { view.marquee_shift() } else { 0 };
                 let x = tx as isize - shift as isize;
-                draw_clipped(canvas, face, x, top, vl.text, ink, h, tx, text_right);
+                if let Some(value) = vl.aside {
+                    // `wrap` kept this row only because both fit on it.
+                    let vw = width_of(face, value);
+                    let vx = text_right.saturating_sub(vw);
+                    // In a document the value is the news and its name is quiet; in a
+                    // menu the row is the thing to choose and what it is set to is the
+                    // quiet part. A selected row is one ink across.
+                    let quiet = if selected {
+                        ink
+                    } else {
+                        crate::theme::SECONDARY
+                    };
+                    let (label, val) = if vl.menu_item.is_some() {
+                        (ink, quiet)
+                    } else {
+                        (quiet, ink)
+                    };
+                    draw_clipped(canvas, face, x, top, vl.text, label, h, tx, vx);
+                    draw_clipped(
+                        canvas,
+                        face,
+                        vx as isize,
+                        top,
+                        value,
+                        val,
+                        h,
+                        vx,
+                        text_right,
+                    );
+                } else {
+                    draw_clipped(canvas, face, x, top, vl.text, ink, h, tx, text_right);
+                }
             }
             Align::Center => {
                 let x = centred(face, vl.text, w) as isize;
@@ -897,10 +1179,20 @@ pub fn render<C: Canvas + ?Sized>(canvas: &mut C, view: &ScrollView<'_>) {
             }
         }
 
+        // The rule under a page title, the width of the text column.
+        if fonts.title_rule && is_heading(vl) {
+            let y = top + (lh + TITLE_RULE_DROP) as isize;
+            if y >= 0 && (y as usize) < h {
+                let x = fonts.margin;
+                let len = arrow_x.saturating_sub(x);
+                canvas.fill_rect(x, y as usize, len, 1, crate::theme::RULE);
+            }
+        }
+
         // Sensitive-line marker: a ragged strip in the right gutter over the line's height,
         // never reaching the text. Same geometry and per-row lengths as the pager's.
         if let (true, Some(sc)) = (vl.sensitive, view.scramble) {
-            let text_right = fonts.margin + width_of(face, vl.text);
+            let text_right = tx + width_of(face, vl.text);
             let space = face.advance(b' ');
             let right_end = arrow_x.saturating_sub(space);
             let room = right_end.saturating_sub(text_right + space).min(31);
@@ -1030,6 +1322,7 @@ mod tests {
             margin: 6,
             colour: true,
             scrollbar: 6,
+            title_rule: false,
         }
     }
 
@@ -1043,34 +1336,8 @@ mod tests {
             margin: 2,
             colour: false,
             scrollbar: 3,
+            title_rule: false,
         }
-    }
-
-    #[test]
-    fn a_document_that_fills_the_view_exactly_is_whole() {
-        let doc = [Line::body("x"); MAX_LINES];
-        let view = ScrollView::build(&doc, 320, 200, fonts());
-        assert_eq!(view.lines.len(), MAX_LINES);
-        assert!(view.whole());
-    }
-
-    #[test]
-    fn a_document_with_a_line_past_the_room_says_it_is_not_whole() {
-        // The last line is the one left out, and the last line of an approval screen is
-        // the one that matters: scrolled to the end, the view must not look complete.
-        let doc = [Line::body("x"); MAX_LINES + 1];
-        assert!(!ScrollView::build(&doc, 320, 200, fonts()).whole());
-    }
-
-    #[test]
-    fn a_line_cut_short_by_the_room_is_not_whole_either() {
-        // The last line fits its first row but not the rest of its text.
-        let long = "word ".repeat(40);
-        let mut doc = [Line::body("x"); MAX_LINES];
-        doc[MAX_LINES - 1] = Line::body(&long).wrapped();
-        let view = ScrollView::build(&doc, 320, 200, fonts());
-        assert_eq!(view.lines.len(), MAX_LINES);
-        assert!(!view.whole());
     }
 
     #[test]
@@ -1532,6 +1799,7 @@ mod tests {
             margin: 6,
             colour: true,
             scrollbar: 6,
+            title_rule: false,
         };
         let doc = [
             Line::item("Bitcoin", 0).large().with_mark(Mark::Art {
@@ -1658,9 +1926,173 @@ mod tests {
         );
     }
 
-    /// A mark scrolled half off the top reports the half still on screen.
+    /// On a page of data and actions, a value sits behind a bar, a rule divides the two,
+    /// and an action has a chevron -- on a panel with colour.
     #[test]
-    fn a_mark_at_the_edge_is_clipped_not_dropped() {
+    fn values_actions_and_a_divider_read_apart() {
+        use crate::theme::{RULE, SECONDARY};
+        let doc = [
+            Line::body("user").small().muted(),
+            Line::body("admin").value(),
+            Line::divider(),
+            Line::item("View Password", 0).action(),
+            Line::item("Send Password", 1).action(),
+        ];
+        let view = ScrollView::build(&doc, 320, 200, fonts());
+        let mut c = Gray320x240::new();
+        render(&mut c, &view);
+        let f = fonts();
+        let value_top = view.top(1);
+        // The bar, at the margin, down the value's side.
+        assert_eq!(c.get(f.margin, value_top + 2), RULE);
+        // The value's text starts past it.
+        let first_ink = (0..320).find(|&x| c.get(x, value_top + 7) == INK).unwrap();
+        assert!(first_ink >= f.margin + VALUE_INDENT, "text at {first_ink}");
+        // The divider: a rule across the page in its own room.
+        let rule_y = view.top(2) + DIVIDER_ROOM / 2;
+        assert!((f.margin..200).all(|x| c.get(x, rule_y) == RULE));
+        // The unselected action has a grey chevron at its right.
+        let row = view.top(4);
+        let right = (200..320).any(|x| (row..row + 14).any(|y| c.get(x, y) == SECONDARY));
+        assert!(right, "a chevron on the action");
+    }
+
+    #[test]
+    fn a_document_that_fills_the_view_exactly_is_whole() {
+        let doc = [Line::body("x"); MAX_LINES];
+        let view = ScrollView::build(&doc, 320, 200, fonts());
+        assert_eq!(view.lines.len(), MAX_LINES);
+        assert!(view.whole());
+    }
+
+    #[test]
+    fn a_document_with_a_line_past_the_room_says_it_is_not_whole() {
+        // The last line is the one left out, and the last line of an approval screen is
+        // the one that matters: scrolled to the end, the view must not look complete.
+        let doc = [Line::body("x"); MAX_LINES + 1];
+        assert!(!ScrollView::build(&doc, 320, 200, fonts()).whole());
+    }
+
+    #[test]
+    fn a_line_cut_short_by_the_room_is_not_whole_either() {
+        // The last line fits its first row but not the rest of its text.
+        let long = "word ".repeat(40);
+        let mut doc = [Line::body("x"); MAX_LINES];
+        doc[MAX_LINES - 1] = Line::body(&long).wrapped();
+        let view = ScrollView::build(&doc, 320, 200, fonts());
+        assert_eq!(view.lines.len(), MAX_LINES);
+        assert!(!view.whole());
+        // A value too wide for its label's row, whose own row is the one with no room.
+        let mut doc = [Line::body("x"); MAX_LINES];
+        doc[MAX_LINES - 1] =
+            Line::body("Change back to this same wallet").aside("21000000.00000000 BTC");
+        assert!(!ScrollView::build(&doc, 320, 200, fonts()).whole());
+    }
+
+    #[test]
+    fn a_warning_line_is_in_the_accent_even_when_muted() {
+        use crate::theme::{ACCENT, SECONDARY};
+        let doc = [Line::body("unusual change path").warn().muted()];
+        let view = ScrollView::build(&doc, 320, 200, fonts());
+        let mut c = Gray320x240::new();
+        render(&mut c, &view);
+        let lit: Vec<Level> = (0..fonts().body.line_height())
+            .flat_map(|y| (0..320).map(move |x| (x, y)))
+            .map(|(x, y)| c.get(x, y))
+            .filter(|&l| l != PAPER)
+            .collect();
+        assert!(lit.contains(&ACCENT));
+        assert!(!lit.contains(&SECONDARY) && !lit.contains(&INK));
+    }
+
+    #[test]
+    fn a_value_aside_its_label_ends_at_the_right_of_the_row() {
+        use crate::theme::SECONDARY;
+        let doc = [Line::body("To").aside("0.015 BTC")];
+        let view = ScrollView::build(&doc, 320, 200, fonts());
+        assert_eq!(view.lines.len(), 1, "both fit on one row");
+        let mut c = Gray320x240::new();
+        render(&mut c, &view);
+        let f = fonts();
+        let rows = 0..f.body.line_height();
+        let col = |x: usize, want: Level| rows.clone().any(|y| c.get(x, y) == want);
+        // The label at the left, in the secondary ink and never the full one.
+        assert!((f.margin..f.margin + 20).any(|x| col(x, SECONDARY)));
+        assert!(!(0..100).any(|x| col(x, INK)), "the label is not quiet");
+        // The value in full ink, its right end at the text column's right edge.
+        let right = (0..320).rev().find(|&x| col(x, INK)).unwrap();
+        let edge = 320 - f.body.advance(b'^') - f.margin;
+        assert!(
+            right < edge && right + f.body.advance(b'0') >= edge,
+            "ends at {right}"
+        );
+    }
+
+    #[test]
+    fn a_value_with_no_room_beside_its_label_goes_whole_under_it() {
+        // An amount is never clipped to keep a row: too long for the row its label is on,
+        // it takes the next one, all of it.
+        let value = "21000000.00000000 BTC";
+        let doc = [Line::body("Change back to this same wallet").aside(value)];
+        let view = ScrollView::build(&doc, 320, 200, fonts());
+        assert_eq!(view.lines.len(), 2);
+        assert_eq!(view.lines[0].text, "Change back to this same wallet");
+        assert!(view.lines[0].muted, "the label keeps its quiet ink");
+        assert_eq!(view.lines[1].text, value);
+        assert!(!view.lines[1].muted);
+    }
+
+    #[test]
+    fn a_menu_row_keeps_its_name_bright_and_its_setting_quiet() {
+        use crate::theme::SECONDARY;
+        let doc = [
+            Line::item("Units", 0).aside("BTC"),
+            Line::item("Wrap", 1).aside("On"),
+        ];
+        let mut view = ScrollView::build(&doc, 320, 200, fonts());
+        view.select(0);
+        let mut c = Gray320x240::new();
+        render(&mut c, &view);
+        let f = fonts();
+        let top = view.top(1);
+        let rows = top..top + f.body.line_height();
+        let has = |xs: core::ops::Range<usize>, want: Level| {
+            rows.clone()
+                .any(|y| xs.clone().any(|x| c.get(x, y) == want))
+        };
+        // The unselected row: its name in full ink, its setting in the quiet one.
+        assert!(has(0..100, INK), "the name is not bright");
+        assert!(has(200..320, SECONDARY), "the setting is not quiet");
+        assert!(!has(200..320, INK), "the setting is as loud as the name");
+    }
+
+    /// The one-bit panel lays the same page out as if the roles were not there.
+    #[test]
+    fn the_roles_change_nothing_on_one_bit() {
+        let plain = [Line::body("admin").wrapped(), Line::item("View", 0)];
+        let roled = [
+            Line::body("admin").wrapped().value(),
+            Line::divider(),
+            Line::item("View", 0).action(),
+        ];
+        let a = ScrollView::build(&plain, 128, 64, compact_fonts());
+        let b = ScrollView::build(&roled, 128, 64, compact_fonts());
+        assert_eq!(a.content_height(), b.content_height());
+        use crate::framebuffer::Mono128x64;
+        let (mut ca, mut cb) = (Mono128x64::new(), Mono128x64::new());
+        render(&mut ca, &a);
+        render(&mut cb, &b);
+        for y in 0..64 {
+            for x in 0..128 {
+                assert_eq!(ca.get(x, y), cb.get(x, y), "({x}, {y})");
+            }
+        }
+    }
+
+    /// In a document, a mark scrolled half off the top reports the half still on screen;
+    /// in a menu, the row is not drawn until all of it is, and its mark goes with it.
+    #[test]
+    fn a_mark_at_the_edge_is_clipped_in_a_document_and_hidden_in_a_menu() {
         let colour = colour_art();
         let fonts = Fonts {
             title: &peep10x20::FONT,
@@ -1670,15 +2102,17 @@ mod tests {
             margin: 6,
             colour: true,
             scrollbar: 6,
+            title_rule: false,
+        };
+        let mark = Mark::Art {
+            colour: &colour,
+            mono: &crate::art::chainicons::BTC_MONO,
         };
         let doc = [
-            Line::item("Bitcoin", 0).large().with_mark(Mark::Art {
-                colour: &colour,
-                mono: &crate::art::chainicons::BTC_MONO,
-            }),
-            Line::item("Two", 1).large(),
-            Line::item("Three", 2).large(),
-            Line::item("Four", 3).large(),
+            Line::body("Bitcoin").large().with_mark(mark),
+            Line::body("Two").large(),
+            Line::body("Three").large(),
+            Line::body("Four").large(),
         ];
         let mut view = ScrollView::build(&doc, 320, 30, fonts);
         view.set_off(10);
@@ -1689,6 +2123,41 @@ mod tests {
         assert_eq!(m.y, 0);
         assert!(m.skip > 0 && m.skip < 20, "cut at the top: {}", m.skip);
         assert_eq!(m.skip + m.rows, 20);
+
+        let menu = [
+            Line::item("Bitcoin", 0).large().with_mark(mark),
+            Line::item("Two", 1).large(),
+            Line::item("Three", 2).large(),
+        ];
+        let mut view = ScrollView::build(&menu, 320, 30, fonts);
+        view.set_off(10);
+        assert_eq!(view.marks_shown().count(), 0, "half a row's logo");
+    }
+
+    /// A menu draws only whole rows: one cut by the foot of the window is left out.
+    #[test]
+    fn a_menu_draws_only_whole_rows() {
+        let menu = [
+            Line::item("One", 0),
+            Line::item("Two", 1),
+            Line::item("Three", 2),
+        ];
+        let f = fonts();
+        let lh = f.body.line_height();
+        // Room for one row and a half.
+        let height = lh + f.gap + lh / 2;
+        let view = ScrollView::build(&menu, 320, height, f);
+        let mut c = Gray320x240::new();
+        render(&mut c, &view);
+        let second = lh + f.gap;
+        let text_in = |y0: usize, y1: usize| (y0..y1).any(|y| (0..300).any(|x| c.get(x, y) == INK));
+        assert!(!text_in(second, height), "half of \"Two\" was drawn");
+        // A document scrolls by the pixel, and shows the half.
+        let doc = [Line::body("One"), Line::body("Two"), Line::body("Three")];
+        let view = ScrollView::build(&doc, 320, height, f);
+        let mut c2 = Gray320x240::new();
+        render(&mut c2, &view);
+        assert!((second..height).any(|y| (0..300).any(|x| c2.get(x, y) == INK)));
     }
 
     #[test]
@@ -1792,6 +2261,7 @@ mod tests {
             240,
             Fonts {
                 scrollbar: 0,
+                title_rule: false,
                 ..fonts()
             },
         );
@@ -1868,6 +2338,7 @@ mod tests {
             240,
             Fonts {
                 scrollbar: 0,
+                title_rule: false,
                 ..fonts()
             },
         );

@@ -6,7 +6,7 @@
 //! much air to leave, and derive everything else from the canvas: the same [`menu`] gives six
 //! rows of 4x6 on an mk4 and a dozen rows of 7x14 across a Q1's whole 320x240.
 
-use crate::canvas::Canvas;
+use crate::canvas::{Canvas, Level};
 use crate::face::Face;
 use crate::font::{misc4x6, peep7x14, peep10x20};
 use crate::menu::Scroll;
@@ -164,6 +164,15 @@ pub fn info<C: Canvas + ?Sized, S: AsRef<str>>(
 ) {
     canvas.clear();
     let w = canvas.width();
+    if has_room(canvas) {
+        // The page heading every other page on the panel has, and the lines under it.
+        let top = header(canvas, l, title, "");
+        let rows = canvas.height().saturating_sub(top) / l.pitch();
+        for (i, line) in lines.iter().take(rows).enumerate() {
+            draw_text(canvas, l.body, l.margin, top + i * l.pitch(), line.as_ref());
+        }
+        return;
+    }
     draw_text(canvas, l.title, centred(l.title, title, w), 0, title);
     for (i, line) in lines.iter().take(l.rows(canvas.height())).enumerate() {
         draw_text(
@@ -176,11 +185,66 @@ pub fn info<C: Canvas + ?Sized, S: AsRef<str>>(
     }
 }
 
+/// A titled screen of facts, each a name and what it is: `("Board", "q1")`.
+///
+/// On a panel with room the names run down the left in the secondary ink and the values
+/// down the right in full ink, so the eye reads the column it came for. On the OLED each
+/// is one line, the name then the value, as [`info`] would draw it.
+pub fn facts<C: Canvas + ?Sized>(
+    canvas: &mut C,
+    l: &Layout<'_>,
+    title: &str,
+    rows: &[(&str, &str)],
+) {
+    use crate::text::{draw_text_in, width_of};
+    canvas.clear();
+    let w = canvas.width();
+    let space = l.body.advance(b' ');
+    if has_room(canvas) {
+        let top = header(canvas, l, title, "");
+        let fit = canvas.height().saturating_sub(top) / l.pitch();
+        for (i, (name, value)) in rows.iter().take(fit).enumerate() {
+            let y = top + i * l.pitch();
+            draw_text_in(canvas, l.body, l.margin, y, name, crate::theme::SECONDARY);
+            // At the right where both fit with room between; straight after the name
+            // where they would not, so a long value is never drawn over its name.
+            let vw = width_of(l.body, value);
+            let right = w.saturating_sub(l.margin + vw);
+            let after = l.margin + width_of(l.body, name) + 2 * space;
+            draw_text(canvas, l.body, right.max(after), y, value);
+        }
+        return;
+    }
+    draw_text(canvas, l.title, centred(l.title, title, w), 0, title);
+    for (i, (name, value)) in rows.iter().take(l.rows(canvas.height())).enumerate() {
+        let y = l.body_top() + i * l.pitch();
+        let x = draw_text(canvas, l.body, l.margin, y, name);
+        draw_text(canvas, l.body, x + space, y, value);
+    }
+}
+
+/// Whether a canvas is a panel with room -- the Q1's -- rather than the 64-row OLED, whose
+/// pages keep the layout they were drawn with.
+fn has_room<C: Canvas + ?Sized>(c: &C) -> bool {
+    c.height() >= 128
+}
+
 /// A heading and up to two lines under it, the block centred on the canvas: "Installing /
 /// do not disconnect". Empty lines take no ink but keep their place.
+///
+/// On a panel with room, a line too wide for it -- a file's path, a long reason -- wraps
+/// onto rows of its own rather than running off both edges, up to three of them. Lines
+/// that fit are laid out exactly as before, so a screen drawn with short lines does not
+/// move.
 pub fn message<C: Canvas + ?Sized>(canvas: &mut C, l: &Layout<'_>, head: &str, a: &str, b: &str) {
     canvas.clear();
     let (w, h) = (canvas.width(), canvas.height());
+    let room = w.saturating_sub(2 * l.margin);
+    let wide = |t: &str| crate::text::width_of(l.body, t) > room;
+    if has_room(canvas) && (wide(a) || wide(b)) {
+        wrapped_message(canvas, l, head, [a, b]);
+        return;
+    }
     let under = l.title.line_height() + 2 * l.gap + l.body.line_height();
     let block = under + l.pitch();
     let top = h.saturating_sub(block) / 2;
@@ -188,6 +252,78 @@ pub fn message<C: Canvas + ?Sized>(canvas: &mut C, l: &Layout<'_>, head: &str, a
     let y = top + l.title.line_height() + 2 * l.gap;
     draw_text(canvas, l.body, centred(l.body, a, w), y, a);
     draw_text(canvas, l.body, centred(l.body, b, w), y + l.pitch(), b);
+}
+
+/// [`message`] with its lines wrapped to the panel, each over at most three rows, the
+/// block centred as a whole.
+fn wrapped_message<C: Canvas + ?Sized>(
+    canvas: &mut C,
+    l: &Layout<'_>,
+    head: &str,
+    lines: [&str; 2],
+) {
+    let (w, h) = (canvas.width(), canvas.height());
+    let room = w.saturating_sub(2 * l.margin);
+    let sets = lines.map(|t| crate::text::wrap::<_, 3>(l.body, t, room).0);
+    let rows: usize = sets.iter().map(|r| r.len()).sum();
+    let block = l.title.line_height() + 2 * l.gap + rows * l.pitch();
+    let mut y = h.saturating_sub(block) / 2;
+    draw_text(canvas, l.title, centred(l.title, head, w), y, head);
+    y += l.title.line_height() + 2 * l.gap;
+    for r in sets.iter().flatten() {
+        draw_text(canvas, l.body, centred(l.body, r, w), y, r);
+        y += l.pitch();
+    }
+}
+
+/// A page's title across the top, a rule under it, and `aside` -- a step, a count -- at
+/// the right in the secondary ink. Returns the first row below, with air left under the
+/// rule.
+///
+/// The same title a list draws ([`crate::scroll`] with `title_rule`), for a page that lays
+/// itself out by hand: a typing screen, the PIN prompt. Every page on the panel then
+/// starts the same way, so the owner always knows where to look for what the page is.
+///
+/// For a panel with room. The OLED's pages keep their own one-line headings.
+pub fn header<C: Canvas + ?Sized>(c: &mut C, l: &Layout<'_>, title: &str, aside: &str) -> usize {
+    use crate::scroll::{TITLE_RULE_DROP, TITLE_RULE_ROOM};
+    use crate::text::{draw_text_in, width_of};
+    use crate::theme::{RULE, SECONDARY};
+    let w = c.width();
+    let lh = l.title.line_height();
+    draw_text(c, l.title, centred(l.title, title, w), 0, title);
+    if !aside.is_empty() {
+        // Bottom-aligned with the title, so the two read as one line.
+        let x = w.saturating_sub(width_of(l.body, aside) + l.margin);
+        let y = lh.saturating_sub(l.body.line_height() + 1);
+        draw_text_in(c, l.body, x, y, aside, SECONDARY);
+    }
+    let rule_y = lh + TITLE_RULE_DROP;
+    c.fill_rect(l.margin, rule_y, w.saturating_sub(2 * l.margin), 1, RULE);
+    lh + l.gap + TITLE_RULE_ROOM + l.margin
+}
+
+/// A caption at `(x, y)` in the body face and the secondary ink: what the thing below it
+/// is. Returns the row under it, with a little air.
+pub fn caption<C: Canvas + ?Sized>(
+    c: &mut C,
+    l: &Layout<'_>,
+    x: usize,
+    y: usize,
+    text: &str,
+) -> usize {
+    crate::text::draw_text_in(c, l.body, x, y, text, crate::theme::SECONDARY);
+    y + l.body.line_height() + CAPTION_GAP
+}
+
+/// Between a caption and what it names: close enough to belong to it.
+pub const CAPTION_GAP: usize = 4;
+
+/// `text` centred on `y` in the body face and the secondary ink: a hint about what to do.
+pub fn hint<C: Canvas + ?Sized>(c: &mut C, l: &Layout<'_>, y: usize, text: &str) -> usize {
+    let x = centred(l.body, text, c.width());
+    crate::text::draw_text_in(c, l.body, x, y, text, crate::theme::SECONDARY);
+    y + l.body.line_height() + l.gap
 }
 
 /// How tall the busy bar is: the progress bar's rows, but never a single one.
@@ -243,7 +379,20 @@ pub fn working<C: Canvas + ?Sized>(
     note: &str,
     phase: u32,
 ) {
-    message(canvas, l, head, note, "");
+    message(canvas, l, head, "", "");
+    // The note is about the wait, not news: in the secondary ink, which the one-bit
+    // panel still lights.
+    let (w, h) = (canvas.width(), canvas.height());
+    let block = l.title.line_height() + 2 * l.gap + l.body.line_height() + l.pitch();
+    let y = h.saturating_sub(block) / 2 + l.title.line_height() + 2 * l.gap;
+    crate::text::draw_text_in(
+        canvas,
+        l.body,
+        centred(l.body, note, w),
+        y,
+        note,
+        crate::theme::SECONDARY,
+    );
     busy_bar(canvas, phase);
 }
 
@@ -305,6 +454,7 @@ pub fn qr<C: Canvas + ?Sized>(
     if modules == 0 || scale == 0 {
         return false;
     }
+    canvas.fill_rect(0, 0, w, h, QR_SURROUND);
     let side = (modules + 2 * quiet) * scale;
     let (x0, y0) = ((w - side) / 2, (h - side) / 2);
     canvas.fill_rect(x0, y0, side, side, INK);
@@ -340,7 +490,17 @@ pub struct QrLayout {
     pub blocks: usize,
     /// Whether the text is in the larger of the two faces offered.
     pub large: bool,
+    /// Left edge of the symbol, quiet zone included.
+    pub qr_x: usize,
+    /// Left edge of the text column.
+    pub text_x: usize,
 }
+
+/// The level a QR screen's surround is painted in. Dark: on the one-bit panels it is
+/// unlit like a cleared screen, and through the colour panel's greys it is the grey every
+/// other screen is drawn on, so the symbol's page is not a black hole between two grey
+/// ones. The symbol itself stays black on white.
+pub const QR_SURROUND: Level = 3;
 
 /// A QR on the left and its payload on the right, in blocks of four characters.
 ///
@@ -351,9 +511,14 @@ pub struct QrLayout {
 ///
 /// So the text gets the larger face wherever the panel can hold the whole payload in it,
 /// dropping to the small face rather than truncating: a partly shown address is not
-/// something anybody can check. Within a face, four blocks a line are tried first, then
-/// three, then two -- the QR keeps whatever width is left, and if that leaves less than one
-/// pixel per module nothing is drawn and the caller is told.
+/// something anybody can check. Within a face, the number of blocks a line is whichever
+/// of four, three or two leaves the symbol the most pixels a module -- the bigger the
+/// modules, the further away a camera reads them -- with more blocks winning a tie, and
+/// one block a line only when nothing wider fits. If that leaves less than one pixel per
+/// module nothing is drawn and the caller is told.
+///
+/// What width is left over is shared out evenly: before the symbol, between the two, and
+/// after the text, so neither half runs into the panel's edge.
 /// Where a QR and `chars` characters of text would go on a `w` by `h` panel, or `None` if
 /// no arrangement fits. [`qr_with_text`] draws exactly this; it is separate so a caller can
 /// compare arrangements -- a shorter payload, a different error-correction level -- before
@@ -369,31 +534,65 @@ pub fn qr_text_fit(
     if modules == 0 || chars == 0 {
         return None;
     }
-    for (large, face) in [(true, faces.0), (false, faces.1)] {
+    // Room kept free, at least three line gaps each: edge, between and edge across, and
+    // above and below.
+    let air = 3 * gap;
+    let (air_x, air_y) = (3 * air, 2 * air);
+    let place = |large: bool, face: &dyn Face, blocks: usize| {
         let cw = face.advance(b'0').max(1);
         let row = face.line_height() + gap;
-        for blocks in (1..=BLOCKS_PER_LINE).rev() {
-            let cols = blocks * BLOCK + (blocks - 1);
-            let text_w = cols * cw;
-            let rows = chars.div_ceil(blocks * BLOCK);
-            if text_w + gap >= w || rows * row > h {
-                continue;
+        let text_w = (blocks * BLOCK + (blocks - 1)) * cw;
+        let rows = chars.div_ceil(blocks * BLOCK);
+        if text_w + air_x >= w || rows * row > h {
+            return None;
+        }
+        let (quiet, scale) = qr_fit(modules, w - text_w - air_x, h.saturating_sub(air_y));
+        if scale == 0 {
+            return None;
+        }
+        let side = (modules + 2 * quiet) * scale;
+        let spare = (w - text_w).saturating_sub(side) / 3;
+        Some(QrLayout {
+            scale,
+            quiet,
+            blocks,
+            large,
+            qr_x: spare,
+            text_x: 2 * spare + side,
+        })
+    };
+    for (large, face) in [(true, faces.0), (false, faces.1)] {
+        let mut best: Option<QrLayout> = None;
+        for blocks in (2..=BLOCKS_PER_LINE).rev() {
+            if let Some(l) = place(large, face, blocks)
+                && best.is_none_or(|b| l.scale > b.scale)
+            {
+                best = Some(l);
             }
-            let (quiet, scale) = qr_fit(modules, w - text_w - gap, h);
-            if scale == 0 {
-                continue;
-            }
-            return Some(QrLayout {
-                scale,
-                quiet,
-                blocks,
-                large,
-            });
+        }
+        if let Some(l) = best.or_else(|| place(large, face, 1)) {
+            return Some(l);
         }
     }
     None
 }
 
+/// Rows a caption takes across the top of a QR screen: its line in the small face and a
+/// gap either side, or nothing for no caption. Take it off the height given to
+/// [`qr_text_fit`] when comparing arrangements for a screen that will have one.
+pub fn qr_caption_band(small: &dyn Face, gap: usize, caption: &str) -> usize {
+    if caption.is_empty() {
+        0
+    } else {
+        small.line_height() + 4 * gap
+    }
+}
+
+/// [`qr_text_fit`]'s arrangement, drawn: the symbol, `text` beside it in blocks, and
+/// `caption` -- which address this is, its path -- centred across the top in the small
+/// face and the secondary ink, when it is not empty. The symbol and text share what is
+/// left under it.
+#[allow(clippy::too_many_arguments)]
 pub fn qr_with_text<C: Canvas + ?Sized>(
     canvas: &mut C,
     faces: (&dyn Face, &dyn Face),
@@ -401,20 +600,26 @@ pub fn qr_with_text<C: Canvas + ?Sized>(
     modules: usize,
     get: impl Fn(usize, usize) -> bool,
     text: &str,
+    caption: &str,
 ) -> Option<QrLayout> {
     use crate::canvas::{INK, PAPER};
-    let (w, h) = (canvas.width(), canvas.height());
+    let (w, full_h) = (canvas.width(), canvas.height());
+    let band = qr_caption_band(faces.1, gap, caption);
+    let h = full_h.saturating_sub(band);
     let layout = qr_text_fit(faces, gap, modules, text.len(), w, h)?;
     let face = if layout.large { faces.0 } else { faces.1 };
     let cw = face.advance(b'0').max(1);
     let row = face.line_height() + gap;
-    let text_w = (layout.blocks * BLOCK + layout.blocks - 1) * cw;
     let rows = text.len().div_ceil(layout.blocks * BLOCK);
-    canvas.clear();
-    // The symbol sits in the middle of what is left after the text column.
+    canvas.fill_rect(0, 0, w, full_h, QR_SURROUND);
+    if band > 0 {
+        let small = faces.1;
+        let x = centred(small, caption, w);
+        crate::text::draw_text_in(canvas, small, x, 2 * gap, caption, crate::theme::SECONDARY);
+    }
     let side = (modules + 2 * layout.quiet) * layout.scale;
-    let qr_x = (w - text_w - gap).saturating_sub(side) / 2;
-    let qr_y = (h - side) / 2;
+    let qr_x = layout.qr_x;
+    let qr_y = band + (h - side) / 2;
     canvas.fill_rect(qr_x, qr_y, side, side, INK);
     for my in 0..modules {
         for mx in 0..modules {
@@ -430,11 +635,10 @@ pub fn qr_with_text<C: Canvas + ?Sized>(
         }
     }
 
-    let text_x = w - text_w;
-    let text_y = (h - rows * row) / 2;
+    let text_y = band + (h - rows * row) / 2;
     for (i, block) in text.as_bytes().chunks(BLOCK).enumerate() {
         let (r, c) = (i / layout.blocks, i % layout.blocks);
-        let x = text_x + c * (BLOCK + 1) * cw;
+        let x = layout.text_x + c * (BLOCK + 1) * cw;
         let y = text_y + r * row;
         if let Ok(s) = core::str::from_utf8(block) {
             draw_text(canvas, face, x, y, s);
@@ -643,13 +847,14 @@ mod tests {
             assert!(inked(&c, 0, top, 320, 240), "no bar drawn at phase {phase}");
             let mut plain = Gray320x240::new();
             message(&mut plain, &Layout::roomy(), "Deriving", "Taproot...", "");
-            // Above the bar rows the busy screen is exactly the message screen: the bar
-            // adds movement, it does not push the text around.
+            // Above the bar rows the busy screen is the message screen, inked in the same
+            // places (its note in the secondary ink): the bar adds movement, it does not
+            // push the text around.
             for y in 0..top {
                 for x in 0..320 {
                     assert_eq!(
-                        c.get(x, y),
-                        plain.get(x, y),
+                        c.get(x, y) != 0,
+                        plain.get(x, y) != 0,
                         "row {y} changed at phase {phase}"
                     );
                 }
@@ -706,8 +911,8 @@ mod tests {
                 assert_eq!(c.get(x, y), PAPER, "module pixel {dx},{dy}");
             }
         }
-        // And nothing was drawn outside the symbol.
-        assert!(!inked(&c, 0, 0, 320, y0));
+        // And nothing but the surround outside the symbol.
+        assert!((0..y0).all(|y| (0..320).all(|x| c.get(x, y) == QR_SURROUND)));
     }
 
     #[test]
@@ -740,12 +945,72 @@ mod tests {
     const TAPROOT: &str = "BC1P0XLXVLHEMJA6C4DQV22UAPCTQUPFHLXM9H8Z3K2E72Q4K9HCZ7VQZK5JJ0";
 
     #[test]
-    fn the_roomy_panel_shows_the_address_large_four_blocks_to_a_line() {
+    fn the_roomy_panel_shows_the_address_large_beside_the_biggest_symbol() {
         let mut c = Gray320x240::new();
-        let got = qr_with_text(&mut c, q1_faces(), 2, 29, checker, TAPROOT).unwrap();
+        let got = qr_with_text(&mut c, q1_faces(), 2, 29, checker, TAPROOT, "").unwrap();
         assert!(got.large, "the Q1 has room for the large face");
-        assert_eq!(got.blocks, 4);
-        assert!(got.scale >= 3, "the symbol still has room: {}", got.scale);
+        // Narrower text, a taller column, and a symbol a camera reads from further off
+        // than four blocks a line would leave room for.
+        assert!(got.blocks < 4);
+        assert!(
+            got.scale >= 5,
+            "the symbol is not as big as it can be: {}",
+            got.scale
+        );
+    }
+
+    #[test]
+    fn facts_read_as_names_and_values() {
+        use crate::theme::SECONDARY;
+        let l = Layout::roomy();
+        let mut c = Gray320x240::new();
+        facts(&mut c, &l, "Boot", &[("HAL", "ok"), ("Board", "q1")]);
+        let top = 40;
+        let row = |y0: usize, xs: core::ops::Range<usize>, want| {
+            (y0..y0 + l.body.line_height()).any(|y| xs.clone().any(|x| c.get(x, y) == want))
+        };
+        let first = (top..240)
+            .find(|&y| (0..320).any(|x| c.get(x, y) == SECONDARY))
+            .unwrap();
+        // The name at the left, quiet; the value at the right, in full ink.
+        assert!(row(first, 0..40, SECONDARY));
+        assert!(!row(first, 0..160, INK), "the name is not quiet");
+        assert!(row(first, 280..320, INK), "the value is not at the right");
+    }
+
+    #[test]
+    fn a_caption_heads_the_screen_and_the_symbol_starts_below_it() {
+        use crate::theme::SECONDARY;
+        let mut c = Gray320x240::new();
+        let caption = "m/84'/0'/0'/0/12";
+        qr_with_text(&mut c, q1_faces(), 2, 29, checker, NATIVE, caption).unwrap();
+        let band = qr_caption_band(q1_faces().1, 2, caption);
+        // The caption, in the quiet ink, inside its band.
+        assert!((0..band).any(|y| (0..320).any(|x| c.get(x, y) == SECONDARY)));
+        // Nothing of the symbol or the text up there.
+        assert!(
+            (0..band).all(|y| (0..320).all(|x| matches!(c.get(x, y), QR_SURROUND | SECONDARY)))
+        );
+        // And the symbol is still there, under it.
+        assert!((band..240).any(|y| (0..320).any(|x| c.get(x, y) == INK)));
+    }
+
+    #[test]
+    fn neither_half_runs_into_the_edge() {
+        let mut c = Gray320x240::new();
+        let got = qr_with_text(&mut c, q1_faces(), 2, 29, checker, TAPROOT, "").unwrap();
+        let cw = q1_faces().0.advance(b'0');
+        let text_w = (got.blocks * BLOCK + got.blocks - 1) * cw;
+        let side = (29 + 2 * got.quiet) * got.scale;
+        assert!(got.qr_x >= 6, "the symbol is against the left edge");
+        assert!(
+            got.text_x >= got.qr_x + side + 6,
+            "the text touches the symbol"
+        );
+        assert!(
+            got.text_x + text_w + 6 <= 320,
+            "the text is against the right edge"
+        );
     }
 
     #[test]
@@ -753,7 +1018,7 @@ mod tests {
         // 62 characters in 7x14 next to a symbol does not fit on 128x64 at any block count,
         // and half an address on screen is not something anyone can check against a wallet.
         let mut c = Mono128x64::new();
-        let got = qr_with_text(&mut c, mono_faces(), 1, 29, checker, TAPROOT).unwrap();
+        let got = qr_with_text(&mut c, mono_faces(), 1, 29, checker, TAPROOT, "").unwrap();
         assert!(!got.large);
         assert_eq!(got.blocks, 4);
         assert!(got.scale >= 1);
@@ -765,7 +1030,7 @@ mod tests {
         // silently drops the tail of the text.
         for (name, text) in [("native", NATIVE), ("taproot", TAPROOT)] {
             let mut c = Mono128x64::new();
-            let got = qr_with_text(&mut c, mono_faces(), 1, 29, checker, text).unwrap();
+            let got = qr_with_text(&mut c, mono_faces(), 1, 29, checker, text, "").unwrap();
             let rows = text.len().div_ceil(got.blocks * BLOCK);
             let face: &dyn Face = if got.large {
                 mono_faces().0
@@ -779,9 +1044,8 @@ mod tests {
             // The last block's own column is inside the panel.
             let cw = face.advance(b'0');
             let last = (text.len().div_ceil(BLOCK) - 1) % got.blocks;
-            let text_w = (got.blocks * BLOCK + got.blocks - 1) * cw;
             assert!(
-                (128 - text_w) + last * (BLOCK + 1) * cw + BLOCK * cw <= 128,
+                got.text_x + last * (BLOCK + 1) * cw + BLOCK * cw <= 128,
                 "{name}"
             );
         }
@@ -791,7 +1055,7 @@ mod tests {
     fn a_symbol_too_big_for_the_panel_reports_rather_than_drawing() {
         let mut c = Mono128x64::new();
         assert_eq!(
-            qr_with_text(&mut c, mono_faces(), 1, 177, checker, NATIVE),
+            qr_with_text(&mut c, mono_faces(), 1, 177, checker, NATIVE, ""),
             None
         );
         assert!(!inked(&c, 0, 0, 128, 64));

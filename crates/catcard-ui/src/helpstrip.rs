@@ -26,9 +26,15 @@ pub const LABEL: &str = "? Help";
 /// than as highlighted text, and no more -- every row here is a row the menu gives up.
 const PAD: usize = 1;
 
+/// Rows along the strip's top edge for its rule: the rule, and a row of air under it.
+///
+/// Without it the strip was a grey label floating under the last row of the menu, and a
+/// row cut off by the strip looked like the strip's own text.
+const RULE_ROWS: usize = 2;
+
 /// How tall the strip is, drawn in `face`.
 pub fn height(face: &dyn Face) -> usize {
-    face.line_height() + 2 * PAD
+    RULE_ROWS + face.line_height() + 2 * PAD
 }
 
 /// The rows the strip occupies at the foot of a canvas `h` tall: `(first row, rows)`.
@@ -58,7 +64,11 @@ pub fn render<C: Canvas + ?Sized>(canvas: &mut C, face: &dyn Face, strip: Strip)
         (PAPER, strip.ink)
     };
     canvas.fill_rect(0, y, w, h, paper);
-    draw_text_in(canvas, face, centred(face, LABEL, w), y + PAD, LABEL, ink);
+    if !strip.focused {
+        canvas.fill_rect(0, y, w, 1, crate::theme::RULE);
+    }
+    let ty = y + RULE_ROWS + PAD;
+    draw_text_in(canvas, face, centred(face, LABEL, w), ty, LABEL, ink);
 }
 
 /// Draw a frame with the strip at its foot: `f` gets the band above it, which is all it
@@ -116,6 +126,7 @@ mod tests {
     use super::*;
     use crate::canvas::{Gray4, Gray320x240};
     use crate::font::peep7x14::FONT;
+    use crate::theme::RULE;
 
     /// The Q1's content area under its status bar.
     type Area = Gray4<320, 224, { 320 * 224 / 2 }>;
@@ -126,12 +137,13 @@ mod tests {
         (0..c.height()).filter(|&y| (0..c.width()).any(|x| c.get(x, y) != PAPER))
     }
 
-    /// One line of the small face and a pixel either side: sixteen rows on the Q1.
+    /// A rule, a row of air, and one line of the small face with a pixel either side:
+    /// eighteen rows on the Q1.
     #[test]
     fn the_strip_is_one_small_line_tall() {
-        assert_eq!(height(&FONT), FONT.line_height() + 2);
-        assert_eq!(height(&FONT), 16);
-        assert_eq!(rows(224, &FONT), (208, 16));
+        assert_eq!(height(&FONT), FONT.line_height() + 2 + RULE_ROWS);
+        assert_eq!(height(&FONT), 18);
+        assert_eq!(rows(224, &FONT), (206, 18));
         assert_eq!(
             rows(10, &FONT),
             (0, 10),
@@ -158,15 +170,18 @@ mod tests {
             used.iter().all(|&y| y >= first),
             "ink above the strip: {used:?}"
         );
+        // A rule across its top edge, to divide it from the screen above.
+        assert!((0..c.width()).all(|x| c.get(x, first) == RULE));
         // Dim, not full ink: it is not a menu row.
-        for y in first..c.height() {
+        let label = first + RULE_ROWS;
+        for y in label..c.height() {
             for x in 0..c.width() {
                 assert!(matches!(c.get(x, y), PAPER | DIM), "{x},{y}");
             }
         }
         // Centred: as much paper left of the label as right of it, to a pixel.
         let xs: Vec<usize> = (0..c.width())
-            .filter(|&x| (first..c.height()).any(|y| c.get(x, y) != PAPER))
+            .filter(|&x| (label..c.height()).any(|y| c.get(x, y) != PAPER))
             .collect();
         let (l, r) = (xs[0], c.width() - 1 - xs[xs.len() - 1]);
         assert!(l.abs_diff(r) <= FONT.width as usize, "left {l}, right {r}");
@@ -215,10 +230,10 @@ mod tests {
         });
         assert_eq!(seen, 240 - height(&FONT));
         let (first, n) = rows(240, &FONT);
-        // The rows of the strip hold only the strip: paper and the dim label.
+        // The rows of the strip hold only the strip: its rule, paper and the dim label.
         for y in first..first + n {
             for x in 0..320 {
-                assert!(matches!(c.get(x, y), PAPER | DIM), "{x},{y}");
+                assert!(matches!(c.get(x, y), PAPER | DIM | RULE), "{x},{y}");
             }
         }
         assert_eq!(

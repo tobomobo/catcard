@@ -2422,7 +2422,8 @@ impl MenuScreen {
             return draw_grid(panel, items, self.cursor, self.off, self.strip());
         }
         let (title, note) = menu_head(screen, no_seed);
-        let view = build_menu_view(title, note.as_str(), items, self.off, self.cursor);
+        let values = screen == Screen::Settings;
+        let view = build_menu_view(title, note.as_str(), items, self.off, self.cursor, values);
         // Through the marks path, like every other screen that renders a document: a
         // list menu can carry a colour mark too, and one drawn plain would leave its
         // space empty.
@@ -2473,7 +2474,8 @@ impl MenuScreen {
             return;
         }
         let (title, note) = menu_head(screen, blank);
-        let mut view = build_menu_view(title, note.as_str(), items, self.off, self.cursor);
+        let values = screen == Screen::Settings;
+        let mut view = build_menu_view(title, note.as_str(), items, self.off, self.cursor, values);
         let old = view.off();
         match k {
             // `0` jumps back to the top, the arrows move one row.
@@ -2665,17 +2667,17 @@ fn draw_grid(
     // place goes out through that origin rather than putting it back.
     display::draw_scrolled(
         panel,
-        &catcard_ui::art::menuicons::PALETTE,
+        &catcard_ui::theme::PAGE,
         catcard_ui::grid::EDGE,
         |c| grid_strip_frame(c, items, cursor, off, strip),
     );
 }
 
-/// The label ink of the help strip under a grid. The grid draws through the art's
-/// palette, which has no ramp to take a grey from; entry 4 is its slate blue-grey, the
-/// quietest thing in it that still reads on the background.
+/// The label ink of the help strip under a grid: the secondary ink, which the grid's
+/// palette ([`PAGE`](catcard_ui::theme::PAGE)) carries beside the art's colours, so the
+/// strip is the same grey here as under a list.
 #[cfg(feature = "board-q1")]
-const GRID_STRIP_INK: catcard_ui::canvas::Level = 4;
+const GRID_STRIP_INK: catcard_ui::canvas::Level = catcard_ui::theme::SECONDARY;
 
 /// A grid page with the help strip under it.
 #[cfg(feature = "board-q1")]
@@ -2721,7 +2723,7 @@ fn slide_grid(
     // and the help are repainted where they are.
     display::slide_frame_by(
         panel,
-        &catcard_ui::art::menuicons::PALETTE,
+        &catcard_ui::theme::PAGE,
         right,
         dist,
         catcard_ui::grid::EDGE,
@@ -3095,16 +3097,24 @@ fn build_menu_view<'a>(
     items: &'a [&'a str],
     off: usize,
     cursor: usize,
+    values: bool,
 ) -> catcard_ui::scroll::ScrollView<'a> {
     use catcard_ui::scroll::{Line as DLine, ScrollView};
 
     let mut lines: heapless::Vec<DLine, 40> = heapless::Vec::new();
     let _ = lines.push(DLine::title(title));
     if !note.is_empty() {
-        let _ = lines.push(DLine::body(note).small().centered());
+        let _ = lines.push(DLine::body(note).small().centered().muted());
     }
+    // Where the panel has the width, a setting's row says what it is set to, at its
+    // right: the list answers "what is this on?" without opening each row to find out.
+    let values = values && display::FONTS.colour;
     for (i, item) in items.iter().enumerate() {
-        let _ = lines.push(DLine::item(item, i as u32).wrapped());
+        let mut line = DLine::item(item, i as u32).wrapped();
+        if let Some(now) = values.then(|| setting_now(item)).flatten() {
+            line = line.aside(now);
+        }
+        let _ = lines.push(line);
     }
     // Above the help strip, where there is one: the rows under it are not the list's.
     let mut view = ScrollView::build(
@@ -3120,6 +3130,54 @@ fn build_menu_view<'a>(
     view.set_off(off);
     view.select(cursor as u32);
     view
+}
+
+/// What the settings row `label` is set to now, in a word or two, for the right of its
+/// row -- or `None` for a row that opens a menu of its own rather than holding a value.
+///
+/// Short on purpose: the row's name and this share one line, and a value too long for
+/// it would be put on a line of its own, which in a menu reads as a second row.
+fn setting_now(label: &str) -> Option<&'static str> {
+    use catcard_settings::prefs::FeeCap;
+    let on = |b: bool| if b { "On" } else { "Off" };
+    let now = crate::prefs::current();
+    Some(match label {
+        "Idle timeout" => {
+            let m = now.idle_minutes.unwrap_or(0);
+            let row = IDLE_MINUTES.iter().position(|&x| x == m)?;
+            IDLE_ROWS[row]
+        }
+        "Display units" => now.units.label(),
+        "Max network fee" => match now.fee_cap {
+            FeeCap::Percent(10) => "10%",
+            FeeCap::Percent(25) => "25%",
+            FeeCap::Percent(50) => "50%",
+            FeeCap::None => "No cap",
+            FeeCap::Percent(_) => return None,
+        },
+        "SLIP-132 export" => on(now.slip132),
+        "Menu wrapping" => on(now.menu_wrap),
+        #[cfg(not(feature = "board-mk3"))]
+        "NFC Push Tx" => {
+            use catcard_settings::prefs::PushTx;
+            match now.pushtx {
+                PushTx::Disabled => "Off",
+                PushTx::Coldcard => "coldcard",
+                PushTx::Mempool => "mempool",
+                PushTx::Custom(_) => "Custom",
+            }
+        }
+        #[cfg(feature = "board-q1")]
+        "Secure notes" => on(now.notes == Some(true)),
+        #[cfg(feature = "board-q1")]
+        "LCD brightness" => {
+            let row = BRIGHTNESS_LEVELS
+                .iter()
+                .position(|&x| x == now.backlight_percent)?;
+            BRIGHTNESS_ROWS[row].split(' ').next()?
+        }
+        _ => return None,
+    })
 }
 
 /// Draw a menu screen: the larger font, the selected row an inverted bar, scrolled to the
@@ -3142,39 +3200,32 @@ fn reg_line(name: &str, v: u32) -> Line {
     s
 }
 
-/// What bring-up found, in the same words the selftest screen used.
+/// What bring-up found, in the same words the selftest screen used: each part's name
+/// and how it came up.
 fn boot_screen(panel: &mut display::Panel, report: &BootReport) {
-    let mut lines: heapless::Vec<Line, MAX_LINES> = heapless::Vec::new();
-
-    let mut l = Line::new();
-    let _ = write!(l, "HAL {}", if report.hal.is_ok() { "ok" } else { "FAIL" });
-    let _ = lines.push(l);
-
-    let mut l = Line::new();
-    let _ = write!(l, "DWT {}", if report.dwt_running { "ok" } else { "FAIL" });
-    let _ = lines.push(l);
-
-    let mut l = Line::new();
-    match report.entropy {
-        Ok(bits) => {
-            let _ = write!(l, "entropy ok {bits} bit");
-        }
-        Err(_) => {
-            let _ = write!(l, "entropy BELOW POLICY");
-        }
-    }
-    let _ = lines.push(l);
-
-    let mut l = Line::new();
+    let pass = |ok: bool| if ok { "ok" } else { "FAIL" };
+    let mut entropy = Line::new();
+    let _ = match report.entropy {
+        Ok(bits) => write!(entropy, "ok, {bits} bit"),
+        Err(_) => write!(entropy, "BELOW POLICY"),
+    };
     // What it is running on, and what it was built for, when those differ.
+    let mut board = Line::new();
     let running = crate::running_board();
     let _ = if running == crate::BOARD_NAME {
-        write!(l, "board {running}")
+        write!(board, "{running}")
     } else {
-        write!(l, "board {running} (built {})", crate::BOARD_NAME)
+        write!(board, "{running} (built {})", crate::BOARD_NAME)
     };
-    let _ = lines.push(l);
-    info(panel, "Boot", &lines);
+    let rows = [
+        ("HAL", pass(report.hal.is_ok())),
+        ("DWT", pass(report.dwt_running)),
+        ("entropy", entropy.as_str()),
+        ("board", board.as_str()),
+    ];
+    display::draw(panel, |c| {
+        catcard_ui::widgets::facts(c, &display::LAYOUT, "Boot", &rows);
+    });
 }
 
 fn prng_screen(panel: &mut display::Panel, s: catcard_entropy::DrbgStats, sample: Option<u32>) {
@@ -5034,7 +5085,10 @@ pub(crate) fn qr_faces() -> (
 /// wallet's addresses have no single-signature kind to name them by, and the encoding is
 /// the only thing this decision turns on. The explorer's share path (`crate::payuri`)
 /// comes here for the bare address, which is the default.
-pub(crate) fn address_qr_of(ui: &mut Ui<'_>, address: &str, bech32: bool) {
+///
+/// `caption` says which address this is -- its derivation path -- across the top of the
+/// screen, where the panel has room for it.
+pub(crate) fn address_qr_of(ui: &mut Ui<'_>, address: &str, bech32: bool, caption: &str) {
     use catcard_wallet::address;
 
     let mut payload = [0u8; address::MAX_QR_PAYLOAD];
@@ -5044,7 +5098,7 @@ pub(crate) fn address_qr_of(ui: &mut Ui<'_>, address: &str, bech32: bool) {
         return;
     };
     let shown = address::qr_address(payload);
-    qr_screen(ui, payload, shown);
+    qr_screen_captioned(ui, payload.as_bytes(), shown, caption);
 }
 
 /// A QR of `payload` beside `shown` in blocks of four, until a key is pressed.
@@ -5067,6 +5121,18 @@ pub(crate) fn qr_screen(ui: &mut Ui<'_>, payload: &str, shown: &str) {
 /// right choice for a secret: the text column beside an address is there for a person to
 /// read back, and a seed is not something to put on the glass twice.
 pub(crate) fn qr_screen_bytes(ui: &mut Ui<'_>, payload: &[u8], shown: &str) {
+    qr_screen_captioned(ui, payload, shown, "");
+}
+
+/// [`qr_screen_bytes`] with `caption` across the top: which address this is. Only on a
+/// panel with the rows for it; the 64-row OLED keeps them for the symbol.
+pub(crate) fn qr_screen_captioned(ui: &mut Ui<'_>, payload: &[u8], shown: &str, caption: &str) {
+    let caption = if display::FONTS.colour && !shown.is_empty() {
+        caption
+    } else {
+        ""
+    };
+    let band = catcard_ui::widgets::qr_caption_band(qr_faces().1, display::FONTS.gap, caption);
     use anyd::codes::qr::{EcLevel, QrEncoder, Version};
 
     const MAX_VERSION: Version = match Version::new(8) {
@@ -5093,7 +5159,7 @@ pub(crate) fn qr_screen_bytes(ui: &mut Ui<'_>, payload: &[u8], shown: &str) {
                     grid.width(),
                     shown.len(),
                     display::SCREEN_W,
-                    display::SCREEN_H,
+                    display::SCREEN_H.saturating_sub(band),
                 )
             })
             .map_or(0, |fit| fit.scale)
@@ -5129,6 +5195,7 @@ pub(crate) fn qr_screen_bytes(ui: &mut Ui<'_>, payload: &[u8], shown: &str) {
             grid.width(),
             |x, y| grid.get(x, y),
             shown,
+            caption,
         )
         .is_some()
             // No arrangement fits the text: the symbol alone still beats nothing, since it
@@ -6666,7 +6733,7 @@ pub(crate) fn toggle_list_from(
             let mut lines: heapless::Vec<DLine<'_>, { TOGGLE_MAX + 3 }> = heapless::Vec::new();
             let _ = lines.push(DLine::title(head));
             if !note.is_empty() {
-                let _ = lines.push(DLine::body(note).small().centered());
+                let _ = lines.push(DLine::body(note).small().centered().muted());
             }
             for (i, row) in rows[..n].iter().enumerate() {
                 let mut line = row.line;
@@ -8423,7 +8490,7 @@ fn custom_path(gate: &Callgate, login: &mut catcard_pin::Login, ui: &mut Ui<'_>)
         match show_doc(ui, &lines, false, false) {
             DocExit::Selected(i) => {
                 if let Some((kind, text)) = addresses.get(i as usize) {
-                    crate::payuri::share_qr(ui, text.as_str(), kind.is_bech32());
+                    crate::payuri::share_qr(ui, text.as_str(), kind.is_bech32(), &shown);
                 }
             }
             _ => return,
@@ -8904,7 +8971,7 @@ fn address_explorer(gate: &Callgate, login: &mut catcard_pin::Login, ui: &mut Ui
                                 Some(w) => w.kind == catcard_wallet::multisig::Kind::P2wsh,
                                 None => kind.is_bech32(),
                             };
-                            crate::payuri::share_qr(ui, text, bech32);
+                            crate::payuri::share_qr(ui, text, bech32, &path);
                         }
                         break 'wait;
                     }
@@ -9106,6 +9173,20 @@ pub(crate) fn scroll_choice(
     ui: &mut Ui<'_>,
     view: &mut catcard_ui::scroll::ScrollView<'_>,
 ) -> bool {
+    scroll_choice_as(ui, view, "accept", "reject")
+}
+
+/// [`scroll_choice`], with the foot naming what the two keys do on this screen: `sign`
+/// and `cancel` rather than the generic pair. The foot is the Q1's; the one-bit panels
+/// have no room for it and say it in the document.
+pub(crate) fn scroll_choice_as(
+    ui: &mut Ui<'_>,
+    view: &mut catcard_ui::scroll::ScrollView<'_>,
+    accept: &str,
+    reject: &str,
+) -> bool {
+    #[cfg(not(feature = "board-q1"))]
+    let _ = (accept, reject);
     let mut events = [Event::Pressed(Key::Cancel); KEYS];
     let mut keys: heapless::Vec<Key, { KEYS + 1 }> = heapless::Vec::new();
     // On the Q1 the foot of the screen says what the two keys do, and stays put while the
@@ -9113,32 +9194,27 @@ pub(crate) fn scroll_choice(
     // they answer by guessing. Until the end has been on screen ENTER only pages, and the
     // label says that too.
     #[cfg(feature = "board-q1")]
-    let foot = display::FONTS.small.line_height() + 8;
+    let foot =
+        catcard_ui::approval::answers_height(&display::FONTS, display::CONFIRM, display::CANCEL);
     #[cfg(feature = "board-q1")]
     view.set_height(display::SCREEN_H.saturating_sub(foot));
     loop {
         #[cfg(feature = "board-q1")]
         display::draw(ui.panel, |c| {
             use catcard_ui::canvas::Canvas as _;
-            use catcard_ui::icons::draw_key_hint;
             {
                 let mut band = catcard_ui::canvas::Inset::band(c, 0, foot);
                 catcard_ui::scroll::render(&mut band, view);
             }
             let (w, top) = (c.width(), c.height().saturating_sub(foot));
             c.fill_rect(0, top, w, foot, 0);
-            c.fill_rect(0, top, w, 1, display::STRIP_INK);
-            let small = display::FONTS.small;
-            let y = top + 5;
-            let enter = if view.at_end() { "accept" } else { "more" };
-            let x = draw_key_hint(c, small, display::FONTS.margin, y, display::CONFIRM, enter);
-            draw_key_hint(
+            let enter = if view.at_end() { accept } else { "more" };
+            catcard_ui::approval::draw_answers(
                 c,
-                small,
-                x + 3 * small.advance(b' '),
-                y,
-                display::CANCEL,
-                "reject",
+                &display::FONTS,
+                top,
+                (display::CONFIRM, enter),
+                (display::CANCEL, reject),
             );
         });
         #[cfg(not(feature = "board-q1"))]
@@ -11483,17 +11559,26 @@ fn stored_key_shown(
 /// last word has been on screen. The previous version advanced on *any* key, which is
 /// how a held key walked through a page of someone's backup before they could read it.
 pub(crate) fn show_words(ui: &mut Ui<'_>, m: &catcard_wallet::bip39::Mnemonic) {
-    let texts = word_texts(m);
-    let mut lines: heapless::Vec<catcard_ui::scroll::Line, 27> = heapless::Vec::new();
-    let _ = lines.push(catcard_ui::scroll::Line::title("Write these down"));
-    // The same words as BitCan glyphs, for an owner who keeps them that way.
+    use catcard_ui::scroll::Line as Row;
+    // Two columns where the panel is wide enough for them, so a 12-word backup is one
+    // screen, written down without scrolling; one a line on the narrow panels.
+    let two = display::FONTS.colour;
+    let texts = if two { word_pairs(m) } else { word_texts(m) };
+    let mut lines: heapless::Vec<Row, 27> = heapless::Vec::new();
+    let _ = lines.push(Row::title("Write these down"));
+    // The same words as BitCan glyphs, for an owner who keeps them that way. A note
+    // about the page rather than part of the backup, so it is in the secondary ink.
     let alt = cfg!(not(feature = "board-mk3"));
     if alt {
-        let _ = lines.push(catcard_ui::scroll::Line::body("1: show as BitCan").small());
+        let _ = lines.push(Row::body("1: show as BitCan").small().muted());
     }
-    for s in &texts {
-        // Secret, so each word carries the ragged sensitive-line marker.
-        let _ = lines.push(catcard_ui::scroll::Line::body(s).secret());
+    for (i, s) in texts.iter().enumerate() {
+        // A rule between each block of twelve.
+        if two && i > 0 && i % PAIR_ROWS == 0 {
+            let _ = lines.push(Row::divider());
+        }
+        // Secret, so each row carries the ragged sensitive-line marker.
+        let _ = lines.push(Row::body(s).secret());
     }
     // `require_end`: Confirm will not finish until every word has been on screen. The
     // glyphs have the same gate, and finishing them finishes this; backing out of them
@@ -11507,6 +11592,31 @@ pub(crate) fn show_words(ui: &mut Ui<'_>, m: &catcard_wallet::bip39::Mnemonic) {
             return;
         }
     }
+}
+
+/// Rows in a block of [`word_pairs`]: twelve words, two to a row.
+const PAIR_ROWS: usize = 6;
+
+/// The numbered words of a mnemonic two to a row, `" 1  orbit      7  tunnel"`, in
+/// blocks of twelve. Each block reads down its left column and then down its right, the
+/// way a backup card is numbered, so a 12-word mnemonic is one block and a 24-word one is
+/// two: 1 to 12, then 13 to 24. A block short of twelve words splits them evenly.
+pub(crate) fn word_pairs(m: &catcard_wallet::bip39::Mnemonic) -> heapless::Vec<Line, 24> {
+    let words: heapless::Vec<&str, 24> = m.words().collect();
+    let mut out = heapless::Vec::new();
+    for (b, block) in words.chunks(2 * PAIR_ROWS).enumerate() {
+        let rows = block.len().div_ceil(2);
+        for r in 0..rows {
+            let mut s = Line::new();
+            let n = b * 2 * PAIR_ROWS + r;
+            let _ = write!(s, "{:2}  {:<8}", n + 1, block[r]);
+            if let Some(w) = block.get(rows + r) {
+                let _ = write!(s, "   {:2}  {w}", n + rows + 1);
+            }
+            let _ = out.push(s);
+        }
+    }
+    out
 }
 
 /// The numbered words of a mnemonic as `"NN  word"` strings, for a document.
@@ -11536,7 +11646,6 @@ fn about_screen(panel: &mut display::Panel) {
 /// The STM32 in this device: part, silicon revision, flash, and where on which wafer the
 /// die was cut, from the factory unique ID.
 fn chip_screen(panel: &mut display::Panel) {
-    let mut lines: heapless::Vec<Line, 6> = heapless::Vec::new();
     // SAFETY: reads of always-mapped ID registers, each checked on a locked unit first.
     let (uid, (dev, rev), kb) = unsafe {
         (
@@ -11551,27 +11660,29 @@ fn chip_screen(panel: &mut display::Panel) {
         catcard_board::spec::Mcu::Stm32L496 => "STM32L496RGT6",
         catcard_board::spec::Mcu::Stm32L4S5 => "STM32L4S5VIT6",
     };
-    let _ = lines.push(Line::try_from(part).unwrap_or_default());
-    let mut l = Line::new();
-    let _ = write!(l, "ID {:03X} rev {:04X}, {} KB", dev, rev, kb);
-    let _ = lines.push(l);
-    let mut l = Line::new();
-    let _ = l.push_str("Lot ");
+    let mut id = Line::new();
+    let _ = write!(id, "{:03X} rev {:04X}, {} KB", dev, rev, kb);
+    let mut lot = Line::new();
     for c in die.lot() {
-        let _ = l.push(c);
+        let _ = lot.push(c);
     }
-    let _ = write!(l, ", wafer {}", die.wafer);
-    let _ = lines.push(l);
-    let mut l = Line::new();
-    let _ = write!(l, "Die X {}, Y {}", die.x, die.y);
-    let _ = lines.push(l);
-    let mut l = Line::new();
-    let _ = l.push_str("UID ");
+    let _ = write!(lot, ", wafer {}", die.wafer);
+    let mut at = Line::new();
+    let _ = write!(at, "X {}, Y {}", die.x, die.y);
+    let mut hex = Line::new();
     for b in uid {
-        let _ = write!(l, "{:02X}", b);
+        let _ = write!(hex, "{:02X}", b);
     }
-    let _ = lines.push(l);
-    info(panel, "STM32", &lines);
+    let rows = [
+        ("part", part),
+        ("ID", id.as_str()),
+        ("lot", lot.as_str()),
+        ("die", at.as_str()),
+        ("UID", hex.as_str()),
+    ];
+    display::draw(panel, |c| {
+        catcard_ui::widgets::facts(c, &display::LAYOUT, "STM32", &rows);
+    });
 }
 
 /// The log, as lines for the pager.

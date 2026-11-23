@@ -327,6 +327,8 @@ pub struct Summary {
     /// Paid to someone other than us.
     pub sending: u64,
     pub change: u64,
+    /// How many outputs [`Self::change`] is spread over.
+    pub change_outputs: usize,
     /// The fee, when [`Self::fee_known`]; zero otherwise, which a screen must not print.
     pub fee: u64,
     /// The fee as a percentage of what is being sent, rounded down; of the inputs, for a
@@ -657,6 +659,7 @@ pub fn summarise(
 
     let mut total_out = 0u64;
     let mut change = 0u64;
+    let mut change_outputs = 0usize;
     for (index, out) in tx.outputs().enumerate() {
         total_out = total_out.saturating_add(out.amount);
         if is_change(
@@ -669,6 +672,7 @@ pub fn summarise(
             kw,
         ) {
             change = change.saturating_add(out.amount);
+            change_outputs += 1;
         }
     }
     let sending = total_out - change;
@@ -732,6 +736,7 @@ pub fn summarise(
         total_out,
         sending,
         change,
+        change_outputs,
         fee,
         fee_percent,
         fee_warn: fee_known && share_above(fee, fee_base, policy.warn_fee_percent),

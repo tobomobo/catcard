@@ -423,14 +423,14 @@ fn the_hints_stay_inside_the_edges_and_the_dots_inside_their_rows() {
     );
 }
 
-/// Under the help strip the grid has sixteen rows fewer, and a cell still holds the icon
+/// Under the help strip the grid has eighteen rows fewer, and a cell still holds the icon
 /// the art is authored at and a label under it -- on a page with dots too, which take
 /// their own rows out of the same band. And the dots sit directly on top of the strip,
 /// so the two together are one run of rows a slide can hold still.
 #[test]
 fn a_grid_above_the_help_strip_still_fits_its_art() {
     let h = 224 - crate::helpstrip::height(&peep7x14::FONT);
-    assert_eq!(h, 208);
+    assert_eq!(h, 206);
     for body in [h, h - DOTS_H] {
         let r = cell_rect(0, W, body);
         assert!(

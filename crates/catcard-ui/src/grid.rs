@@ -236,6 +236,17 @@ pub fn render_page_with<C: Canvas + ?Sized>(
     let body = if more { h - DOTS_H.min(h) } else { h };
     // `cells` is the window: the columns from `off`, laid out down each one in turn,
     // which is the order they are numbered in.
+    // One face for every label on the page: if one has to drop to the small face, they
+    // all do, so the page reads as a row of names rather than some of them shouting.
+    let font = {
+        let any = cells.iter().enumerate().take(CELLS).any(|(i, cell)| {
+            let at = cell_rect(slot(i), w, body);
+            let room = at.w.saturating_sub(2 * LABEL_GAP);
+            let tall = at.h.saturating_sub(ICON + LABEL_GAP);
+            !core::ptr::addr_eq(Label::fit(font, small, cell.label, room, tall).face, font)
+        });
+        if any { small } else { font }
+    };
     for (i, cell) in cells.iter().enumerate().take(CELLS) {
         draw_cell(
             canvas,
@@ -361,7 +372,8 @@ fn draw_cell<C: Canvas + ?Sized>(
 ) {
     // How the label is going to be set, which decides how tall the block is.
     let room = at.w.saturating_sub(2 * LABEL_GAP);
-    let label = Label::fit(font, small, cell.label, room);
+    let tall = at.h.saturating_sub(ICON + LABEL_GAP);
+    let label = Label::fit(font, small, cell.label, room, tall);
 
     // Icon and label as one block, centred in what the cell has. Where the cell is too
     // short for both the label wins: a nameless picture is a guess, a named empty box is
@@ -397,6 +409,11 @@ fn draw_cell<C: Canvas + ?Sized>(
 /// card" had a row to itself. So a caption that does not fit is tried again over two
 /// lines, and then in the smaller face, and only then cut. Cutting first is what turned
 /// `Analyze RNG` into `Analyze R`.
+///
+/// Two lines have to fit down the cell as well as across it. Under the help strip, with
+/// a page of dots, two lines of the large face do not, and the second was dropped where
+/// it ran off -- `Analyze RNG` came out as `Analyze`, which is worse than cut, because it
+/// looks whole.
 struct Label<'a> {
     face: &'a dyn Face,
     first: &'a str,
@@ -404,7 +421,13 @@ struct Label<'a> {
 }
 
 impl<'a> Label<'a> {
-    fn fit(font: &'a dyn Face, small: &'a dyn Face, text: &'a str, room: usize) -> Self {
+    fn fit(
+        font: &'a dyn Face,
+        small: &'a dyn Face,
+        text: &'a str,
+        room: usize,
+        tall: usize,
+    ) -> Self {
         for face in [font, small] {
             if width_of(face, text) <= room {
                 return Label {
@@ -416,7 +439,8 @@ impl<'a> Label<'a> {
             // At a space, so the break is between words rather than inside one. The
             // last space that leaves both halves fitting wins; a single long word has
             // none and falls through to the next face.
-            if let Some((a, b)) = split_to_fit(face, text, room) {
+            let two_fit = 2 * face.line_height() <= tall;
+            if let Some((a, b)) = split_to_fit(face, text, room).filter(|_| two_fit) {
                 return Label {
                     face,
                     first: a,
